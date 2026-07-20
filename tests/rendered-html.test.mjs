@@ -36,6 +36,8 @@ test("server-renders the complete MotionLab simulator", async () => {
   assert.match(html, /Collisions/);
   assert.match(html, /Springs/);
   assert.match(html, /Run experiment/);
+  assert.match(html, /past position/);
+  assert.match(html, /apex · vᵧ = 0/);
   assert.match(html, /Snapshot analysis/);
   assert.match(html, /Capture this moment/);
   assert.match(html, /Experiment notebook/);
@@ -62,6 +64,7 @@ test("renders accessible controls with the planned projectile defaults", async (
     /<input(?=[^>]*id="projectile-mass")(?=[^>]*min="0\.5")(?=[^>]*max="8")(?=[^>]*step="0\.5")(?=[^>]*value="1\.5")[^>]*>/i,
   );
   assert.match(html, /aria-label="Simulation timeline"/i);
+  assert.match(html, /<option value="0\.5" selected="">0\.5×<\/option>/i);
   assert.match(html, /aria-live="polite"/i);
   assert.match(html, /Save values at/i);
   assert.match(html, /Reset current experiment/);

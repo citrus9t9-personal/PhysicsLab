@@ -513,6 +513,16 @@ function ScenarioControls({
   );
 }
 
+function MotionLegend() {
+  return (
+    <div className="motion-legend" aria-hidden="true">
+      <span><i className="legend-current" /> current</span>
+      <span><i className="legend-trail" /> past position</span>
+      <span><i className="legend-vector" /> velocity</span>
+    </div>
+  );
+}
+
 function WorldScene({
   scenario,
   values,
@@ -530,17 +540,22 @@ function WorldScene({
     const apex = projectileMotion({ speed: values.projectileSpeed, angleDegrees: values.projectileAngle, mass: values.projectileMass, gravity: values.gravity }, duration / 2);
     const xPercent = 8 + (frame.positionX / Math.max(finalState.positionX, 1)) * 84;
     const yPercent = 15 + (frame.positionY / Math.max(apex.positionY, 1)) * 60;
+    const velocityAngle = (Math.atan2(-frame.velocityY, frame.velocityX) * 180) / Math.PI;
+    const arrowLength = clamp(frame.velocity * 3.2, 44, 82);
     const trailTimes = Array.from({ length: 7 }, (_, index) => (time * index) / 7);
     return (
       <div className="world projectile-world" role="img" aria-label="Projectile moving through a two-dimensional coordinate plane">
         <div className="world-grid" />
+        <MotionLegend />
         <div className="ground-line"><span>0 m</span><span>{finalState.positionX.toFixed(1)} m</span></div>
         <div className="launcher" style={{ "--launch-angle": `${-values.projectileAngle}deg` } as CSSProperties} />
+        <div className="apex-marker" style={{ left: "50%", bottom: "75%" }}><i /><span>apex · vᵧ = 0</span></div>
         {trailTimes.map((trailTime, index) => {
           const trail = projectileMotion({ speed: values.projectileSpeed, angleDegrees: values.projectileAngle, mass: values.projectileMass, gravity: values.gravity }, trailTime);
           return <i key={index} className="trail-dot" style={{ left: `${8 + (trail.positionX / Math.max(finalState.positionX, 1)) * 84}%`, bottom: `${15 + (trail.positionY / Math.max(apex.positionY, 1)) * 60}%`, opacity: 0.15 + index * 0.08 }} />;
         })}
         <div className="projectile-object" style={{ left: `${xPercent}%`, bottom: `${yPercent}%` }}><span>m</span></div>
+        <div className="motion-arrow projectile-velocity" style={{ left: `${xPercent}%`, bottom: `${yPercent}%`, "--arrow-angle": `${velocityAngle}deg`, "--arrow-length": `${arrowLength}px`, "--arrow-counter-angle": `${-velocityAngle}deg` } as CSSProperties}><span>{frame.velocity.toFixed(1)} m/s</span></div>
         <div className="gravity-tag">g = 9.81 m/s² ↓</div>
       </div>
     );
@@ -552,39 +567,54 @@ function WorldScene({
     return (
       <div className="world incline-world" role="img" aria-label="Block sliding down an inclined plane">
         <div className="world-grid" />
+        <MotionLegend />
         <div className="incline-rig" style={{ "--ramp-angle": `${-values.inclineAngle}deg` } as CSSProperties}>
           <div className="ramp-surface" />
-          <div className="incline-block" style={{ left: `${82 - progress * 76}%`, "--block-counter-angle": `${values.inclineAngle}deg` } as CSSProperties}>m</div>
+          {progress > 0.02 && Array.from({ length: 5 }, (_, index) => (
+            <i key={index} className="incline-ghost" style={{ left: `${82 - progress * (index / 5) * 76}%`, opacity: 0.12 + index * 0.08, "--block-counter-angle": `${values.inclineAngle}deg` } as CSSProperties} />
+          ))}
+          <div className="incline-block" style={{ left: `${82 - progress * 76}%`, "--block-counter-angle": `${values.inclineAngle}deg` } as CSSProperties}><span>m</span></div>
+          <span className="ramp-distance ramp-start">0 m</span><span className="ramp-distance ramp-end">6 m</span>
         </div>
         <div className="angle-marker">θ = {values.inclineAngle.toFixed(0)}°</div>
         <div className="surface-tag">μₖ = {values.friction.toFixed(2)}</div>
+        <div className="slope-direction">← downhill <strong>{frame.velocity.toFixed(1)} m/s</strong></div>
       </div>
     );
   }
 
   if (scenario === "pulley") {
     const offset = clamp(frame.displacement * 35, -88, 88);
+    const massBMovesDown = values.pulleyMassB >= values.pulleyMassA;
+    const speed = Math.abs(frame.velocity);
     return (
       <div className="world pulley-world" role="img" aria-label="Two masses connected over an ideal pulley">
+        <MotionLegend />
         <div className="pulley-support" />
         <div className="pulley-wheel"><i /><span>ideal pulley</span></div>
         <div className="pulley-rope rope-a" style={{ height: `${132 - offset}px` }} />
         <div className="pulley-rope rope-b" style={{ height: `${132 + offset}px` }} />
-        <div className="hanging-block block-a" style={{ top: `calc(50% - 2px - ${offset}px)` }}><strong>A</strong><span>{values.pulleyMassA.toFixed(1)} kg</span></div>
-        <div className="hanging-block block-b" style={{ top: `calc(50% - 2px + ${offset}px)` }}><strong>B</strong><span>{values.pulleyMassB.toFixed(1)} kg</span></div>
+        <div className="hanging-ghost ghost-a" /><div className="hanging-ghost ghost-b" />
+        <div className="hanging-block block-a" style={{ top: `${250 - offset}px` }}><strong>A</strong><span>{values.pulleyMassA.toFixed(1)} kg</span></div>
+        <div className="hanging-block block-b" style={{ top: `${250 + offset}px` }}><strong>B</strong><span>{values.pulleyMassB.toFixed(1)} kg</span></div>
+        <div className={`pulley-direction direction-a ${massBMovesDown ? "up" : "down"}`}><strong>{massBMovesDown ? "↑" : "↓"}</strong><span>A · {speed.toFixed(1)} m/s</span></div>
+        <div className={`pulley-direction direction-b ${massBMovesDown ? "down" : "up"}`}><strong>{massBMovesDown ? "↓" : "↑"}</strong><span>B · {speed.toFixed(1)} m/s</span></div>
+        {Math.abs(values.pulleyMassA - values.pulleyMassB) < 0.01 && <div className="balanced-tag">balanced · a = 0</div>}
       </div>
     );
   }
 
   if (scenario === "collision") {
-    const positionA = clamp((frame.bodyAPosition / 12) * 100, -8, 105);
-    const positionB = clamp((frame.bodyBPosition / 12) * 100, -8, 105);
+    const positionA = clamp(5 + (frame.bodyAPosition / 12) * 90, -8, 105);
+    const positionB = clamp(5 + (frame.bodyBPosition / 12) * 90, -8, 105);
     return (
       <div className="world collision-world" role="img" aria-label="Two blocks moving on a frictionless twelve meter track">
         <div className="world-grid" />
+        <MotionLegend />
         <div className="collision-track"><span>0</span><span>6 m</span><span>12 m</span></div>
-        <div className={`collision-block block-a ${frame.joined ? "joined-a" : ""}`} style={{ left: `${positionA}%` }}><strong>A</strong><span>{formatValue(frame.velocityX, "m/s", true)}</span></div>
-        <div className={`collision-block block-b ${frame.joined ? "joined-b" : ""}`} style={{ left: `${positionB}%` }}><strong>B</strong><span>{formatValue(frame.velocityY, "m/s", true)}</span></div>
+        <div className="collision-ghost ghost-a" /><div className="collision-ghost ghost-b" />
+        <div className={`collision-block block-a ${frame.joined ? "joined-a" : ""}`} style={{ left: `${positionA}%` }}><span className={`block-velocity ${frame.velocityX < 0 ? "left" : "right"}`}>{frame.velocityX < 0 ? "←" : "→"} {Math.abs(frame.velocityX).toFixed(1)} m/s</span><strong>A</strong></div>
+        <div className={`collision-block block-b ${frame.joined ? "joined-b" : ""}`} style={{ left: `${positionB}%` }}><span className={`block-velocity ${frame.velocityY < 0 ? "left" : "right"}`}>{frame.velocityY < 0 ? "←" : "→"} {Math.abs(frame.velocityY).toFixed(1)} m/s</span><strong>B</strong></div>
         {frame.collisionHappened && <div className="impact-tag">momentum transferred</div>}
       </div>
     );
@@ -594,10 +624,13 @@ function WorldScene({
   return (
     <div className="world spring-world" role="img" aria-label="Mass oscillating horizontally on an ideal spring">
       <div className="world-grid" />
+      <MotionLegend />
       <div className="spring-wall" />
+      <div className="amplitude-zone"><span>−A</span><span>+A</span></div>
       <div className="equilibrium-line"><span>x = 0</span></div>
       <div className="spring-coil" style={{ width: `calc(${xPercent}% - 8%)` }} />
-      <div className="spring-block" style={{ left: `${xPercent}%` }}>m</div>
+      <div className="spring-ghost ghost-left" /><div className="spring-ghost ghost-right" />
+      <div className="spring-block" style={{ left: `${xPercent}%` }}><span>m</span><i className={`spring-velocity ${frame.velocity < 0 ? "left" : "right"}`}>{Math.abs(frame.velocity) < 0.05 ? "turning point" : `${frame.velocity < 0 ? "←" : "→"} ${Math.abs(frame.velocity).toFixed(1)} m/s`}</i></div>
       <div className="spring-track" />
       <div className="spring-tag">k = {values.springConstant.toFixed(0)} N/m</div>
     </div>
@@ -892,7 +925,7 @@ export default function Home() {
   const [viewMode, setViewMode] = useState<ViewMode>("motion");
   const [graphMetric, setGraphMetric] = useState<GraphMetric>("position");
   const [time, setTime] = useState(0);
-  const [playbackSpeed, setPlaybackSpeed] = useState(1);
+  const [playbackSpeed, setPlaybackSpeed] = useState(0.5);
   const [snapshots, setSnapshots] = useState<LabSnapshot[]>([]);
   const [comparisonIds, setComparisonIds] = useState<string[]>([]);
   const [announcement, setAnnouncement] = useState("Experiment ready.");
