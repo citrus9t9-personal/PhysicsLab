@@ -37,6 +37,9 @@ test("server-renders the complete MotionLab simulator", async () => {
   assert.match(html, /Springs/);
   assert.match(html, /Run experiment/);
   assert.match(html, /Snapshot analysis/);
+  assert.match(html, /Capture this moment/);
+  assert.match(html, /Experiment notebook/);
+  assert.match(html, /No moments captured yet/);
   assert.match(html, /Free-body diagram/);
   assert.match(html, /Graphs/);
   assert.doesNotMatch(html, /Codex is working|Your site is taking shape/);
@@ -60,5 +63,6 @@ test("renders accessible controls with the planned projectile defaults", async (
   );
   assert.match(html, /aria-label="Simulation timeline"/i);
   assert.match(html, /aria-live="polite"/i);
+  assert.match(html, /Save values at/i);
   assert.match(html, /Reset current experiment/);
 });

@@ -76,6 +76,23 @@ interface ScenarioDefinition {
   principle: string;
 }
 
+interface LabSnapshot {
+  id: string;
+  scenario: ScenarioId;
+  scenarioName: string;
+  time: number;
+  trackedObject: TrackedObject;
+  values: LabValues;
+  collisionMode: CollisionMode;
+  frame: Frame;
+}
+
+interface SnapshotMetric {
+  label: string;
+  value: number;
+  unit: string;
+}
+
 const G = 9.81;
 const EMPTY_FRAME: Frame = {
   position: 0,
@@ -740,6 +757,132 @@ function StatsPanel({ scenario, frame }: { scenario: ScenarioId; frame: Frame })
   );
 }
 
+function getSnapshotMetrics(snapshot: LabSnapshot): SnapshotMetric[] {
+  const { frame, scenario } = snapshot;
+  return [
+    {
+      label: scenario === "projectile" ? "Horizontal position" : "Position",
+      value: scenario === "projectile" ? frame.positionX : frame.position,
+      unit: "m",
+    },
+    {
+      label: scenario === "projectile" ? "Speed" : "Velocity",
+      value: frame.velocity,
+      unit: "m/s",
+    },
+    {
+      label: "Acceleration",
+      value: frame.acceleration,
+      unit: "m/s²",
+    },
+    {
+      label: "Net force",
+      value: frame.netForce,
+      unit: "N",
+    },
+    {
+      label: "Total energy",
+      value: frame.totalEnergy,
+      unit: "J",
+    },
+  ];
+}
+
+function LabNotebook({
+  snapshots,
+  comparisonIds,
+  onRestore,
+  onRemove,
+  onToggleComparison,
+  onClear,
+}: {
+  snapshots: LabSnapshot[];
+  comparisonIds: string[];
+  onRestore: (snapshot: LabSnapshot) => void;
+  onRemove: (id: string) => void;
+  onToggleComparison: (id: string) => void;
+  onClear: () => void;
+}) {
+  const comparison = comparisonIds
+    .map((id) => snapshots.find((snapshot) => snapshot.id === id))
+    .filter((snapshot): snapshot is LabSnapshot => Boolean(snapshot));
+  const canCompare = comparison.length === 2 && comparison[0].scenario === comparison[1].scenario;
+  const firstMetrics = canCompare ? getSnapshotMetrics(comparison[0]) : [];
+  const secondMetrics = canCompare ? getSnapshotMetrics(comparison[1]) : [];
+
+  return (
+    <section className="lab-notebook" id="notebook" aria-labelledby="notebook-title">
+      <div className="notebook-heading">
+        <div>
+          <p className="eyebrow">Saved evidence / up to 6 moments</p>
+          <h2 id="notebook-title">Experiment notebook</h2>
+        </div>
+        <div className="notebook-actions">
+          <span>{snapshots.length} captured</span>
+          {snapshots.length > 0 && <button type="button" onClick={onClear}>Clear all</button>}
+        </div>
+      </div>
+
+      {snapshots.length === 0 ? (
+        <div className="notebook-empty">
+          <span aria-hidden="true">＋</span>
+          <div><strong>No moments captured yet.</strong><p>Pause anywhere—or scrub to an exact time—then use “Capture this moment” in the analysis panel.</p></div>
+        </div>
+      ) : (
+        <>
+          <div className="snapshot-grid">
+            {snapshots.map((snapshot, index) => {
+              const metrics = getSnapshotMetrics(snapshot);
+              const comparisonPosition = comparisonIds.indexOf(snapshot.id);
+              return (
+                <article className={`snapshot-card scenario-${snapshot.scenario}`} key={snapshot.id}>
+                  <div className="snapshot-card-head">
+                    <span>{snapshot.scenarioName}</span>
+                    <button type="button" onClick={() => onRemove(snapshot.id)} aria-label={`Remove snapshot at ${snapshot.time.toFixed(2)} seconds`}>×</button>
+                  </div>
+                  <button className="snapshot-jump" type="button" onClick={() => onRestore(snapshot)}>
+                    <small>Moment {snapshots.length - index}</small>
+                    <strong>{snapshot.time.toFixed(2)}<em>s</em></strong>
+                    <span>Jump to this moment →</span>
+                  </button>
+                  <dl className="snapshot-values">
+                    {metrics.slice(0, 3).map((metric) => <div key={metric.label}><dt>{metric.label}</dt><dd>{formatValue(metric.value, metric.unit, true)}</dd></div>)}
+                  </dl>
+                  <div className="snapshot-card-foot">
+                    <span>{snapshot.scenario === "pulley" || snapshot.scenario === "collision" ? `Object ${snapshot.trackedObject}` : "Tracked object"}</span>
+                    <button type="button" className={comparisonPosition >= 0 ? "selected" : ""} onClick={() => onToggleComparison(snapshot.id)} aria-pressed={comparisonPosition >= 0}>
+                      {comparisonPosition >= 0 ? `Compare ${comparisonPosition + 1}` : "Compare"}
+                    </button>
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+
+          <div className={`comparison-panel ${canCompare ? "ready" : "waiting"}`}>
+            <div className="comparison-intro">
+              <span>Compare two moments</span>
+              {canCompare ? (
+                <><strong>{comparison[0].time.toFixed(2)}s → {comparison[1].time.toFixed(2)}s</strong><p>Change shown as Moment 2 minus Moment 1.</p></>
+              ) : (
+                <><strong>Select {comparison.length === 0 ? "two snapshots" : "one more snapshot"}</strong><p>Choose snapshots from the same experiment to reveal how its values changed.</p></>
+              )}
+            </div>
+            {canCompare && (
+              <dl className="comparison-values">
+                <div><dt>Elapsed time</dt><dd>{formatValue(comparison[1].time - comparison[0].time, "s", true)}</dd></div>
+                {firstMetrics.map((metric, index) => (
+                  <div key={metric.label}><dt>Δ {metric.label}</dt><dd>{formatValue(secondMetrics[index].value - metric.value, metric.unit, true)}</dd></div>
+                ))}
+              </dl>
+            )}
+          </div>
+        </>
+      )}
+    </section>
+  );
+}
+
 export default function Home() {
   const [scenario, setScenario] = useState<ScenarioId>("projectile");
   const [values, setValues] = useState<LabValues>(INITIAL_VALUES);
@@ -750,7 +893,11 @@ export default function Home() {
   const [graphMetric, setGraphMetric] = useState<GraphMetric>("position");
   const [time, setTime] = useState(0);
   const [playbackSpeed, setPlaybackSpeed] = useState(1);
+  const [snapshots, setSnapshots] = useState<LabSnapshot[]>([]);
+  const [comparisonIds, setComparisonIds] = useState<string[]>([]);
+  const [announcement, setAnnouncement] = useState("Experiment ready.");
   const lastFrameRef = useRef<number | null>(null);
+  const snapshotCounterRef = useRef(1);
 
   const definition = SCENARIOS.find((item) => item.id === scenario) ?? SCENARIOS[0];
   const duration = useMemo(() => getDuration(scenario, values), [scenario, values]);
@@ -821,6 +968,59 @@ export default function Home() {
     setRunState(nextTime >= duration ? "complete" : "paused");
   };
 
+  const captureSnapshot = () => {
+    const snapshot: LabSnapshot = {
+      id: `snapshot-${snapshotCounterRef.current}`,
+      scenario,
+      scenarioName: definition.name,
+      time,
+      trackedObject,
+      values: { ...values },
+      collisionMode,
+      frame: { ...frame },
+    };
+    snapshotCounterRef.current += 1;
+    const previousSameScenario = snapshots.slice(0, 5).find((item) => item.scenario === scenario);
+    setSnapshots((current) => [snapshot, ...current].slice(0, 6));
+    setComparisonIds(previousSameScenario ? [previousSameScenario.id, snapshot.id] : [snapshot.id]);
+    setRunState("paused");
+    setAnnouncement(`${definition.name} moment captured at ${time.toFixed(2)} seconds.`);
+  };
+
+  const restoreSnapshot = (snapshot: LabSnapshot) => {
+    setScenario(snapshot.scenario);
+    setValues({ ...snapshot.values });
+    setCollisionModeState(snapshot.collisionMode);
+    setTrackedObject(snapshot.trackedObject);
+    setTime(snapshot.time);
+    setRunState("paused");
+    setViewMode("motion");
+    setAnnouncement(`${snapshot.scenarioName} restored at ${snapshot.time.toFixed(2)} seconds.`);
+    document.getElementById("lab")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
+  const removeSnapshot = (id: string) => {
+    setSnapshots((current) => current.filter((snapshot) => snapshot.id !== id));
+    setComparisonIds((current) => current.filter((snapshotId) => snapshotId !== id));
+    setAnnouncement("Snapshot removed from the notebook.");
+  };
+
+  const toggleComparison = (id: string) => {
+    const selectedSnapshot = snapshots.find((snapshot) => snapshot.id === id);
+    if (!selectedSnapshot) return;
+    setComparisonIds((current) => {
+      if (current.includes(id)) return current.filter((snapshotId) => snapshotId !== id);
+      const sameScenario = current.filter((snapshotId) => snapshots.find((snapshot) => snapshot.id === snapshotId)?.scenario === selectedSnapshot.scenario);
+      return [...sameScenario.slice(-1), id];
+    });
+  };
+
+  const clearSnapshots = () => {
+    setSnapshots([]);
+    setComparisonIds([]);
+    setAnnouncement("All notebook snapshots cleared.");
+  };
+
   return (
     <main className="app-shell">
       <header className="topbar">
@@ -833,10 +1033,10 @@ export default function Home() {
 
       <section className="hero">
         <div>
-          <p className="eyebrow">Interactive physics workspace / prototype 01</p>
+          <p className="eyebrow">Interactive physics workspace / prototype 02</p>
           <h1>See the forces<br /><em>behind the motion.</em></h1>
         </div>
-        <p>Build a scenario, run time forward, and pause anywhere to connect the motion with forces, energy, and graphs.</p>
+        <p>Build a scenario, run time forward, and capture exact moments to compare the motion with forces, energy, and graphs.</p>
       </section>
 
       <nav className="scenario-nav" aria-label="Physics scenarios">
@@ -908,17 +1108,23 @@ export default function Home() {
             </div>
           )}
           <StatsPanel scenario={scenario} frame={frame} />
+          <button className="capture-button" type="button" onClick={captureSnapshot}>
+            <span aria-hidden="true">＋</span>
+            <span><strong>Capture this moment</strong><small>Save values at {time.toFixed(2)} s</small></span>
+          </button>
           <div className="fbd-heading"><span>Free-body diagram</span><small>{runState === "running" ? "Pause to inspect" : "Live snapshot"}</small></div>
           <ForceDiagram scenario={scenario} values={values} frame={frame} trackedObject={trackedObject} time={time} />
         </aside>
       </section>
+
+      <LabNotebook snapshots={snapshots} comparisonIds={comparisonIds} onRestore={restoreSnapshot} onRemove={removeSnapshot} onToggleComparison={toggleComparison} onClear={clearSnapshots} />
 
       <footer>
         <span>MOTIONLAB · CAPSTONE PROTOTYPE</span>
         <p>Idealized AP Physics 1 models · no air resistance unless specified</p>
         <span>5 EXPERIMENTS / 1 WORKSPACE</span>
       </footer>
-      <p className="sr-only" aria-live="polite">Simulation {runState} at {time.toFixed(2)} seconds.</p>
+      <p className="sr-only" aria-live="polite">{announcement} Simulation {runState} at {time.toFixed(2)} seconds.</p>
     </main>
   );
 }

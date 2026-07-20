@@ -13,7 +13,7 @@ export async function generateMetadata(): Promise<Metadata> {
   return {
     title: "MotionLab — Interactive AP Physics Simulator",
     description:
-      "Run, pause, and analyze interactive AP Physics 1 experiments with live measurements, free-body diagrams, and graphs.",
+      "Run, pause, capture, and compare AP Physics 1 experiments with live measurements, free-body diagrams, and graphs.",
     openGraph: {
       title: "MotionLab — See the Forces Behind the Motion",
       description:
