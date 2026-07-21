@@ -685,7 +685,7 @@ h1 em {
   box-shadow: 4px 4px 0 var(--ink);
   display: grid;
   place-items: center;
-  transition: left 45ms linear, bottom 45ms linear;
+  will-change: left, bottom;
 }
 
 .projectile-object span,
@@ -830,7 +830,7 @@ h1 em {
   display: grid;
   place-items: center;
   transform: rotate(var(--block-counter-angle));
-  transition: left 45ms linear;
+  will-change: left;
 }
 
 .incline-ghost {
@@ -960,7 +960,7 @@ h1 em {
   display: grid;
   place-items: center;
   align-content: center;
-  transition: top 45ms linear;
+  will-change: top;
 }
 
 .hanging-block strong {
@@ -1072,7 +1072,7 @@ h1 em {
   place-items: center;
   align-content: center;
   transform: translateX(-50%);
-  transition: left 45ms linear;
+  will-change: left;
 }
 
 .collision-block.block-a { background: var(--orange); }
@@ -1182,7 +1182,7 @@ h1 em {
   box-shadow: 5px 5px 0 var(--ink);
   display: grid;
   place-items: center;
-  transition: left 45ms linear;
+  will-change: left;
 }
 
 .spring-velocity {
