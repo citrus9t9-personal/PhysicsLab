@@ -10,12 +10,16 @@ const animatedSelectors = [
   ".spring-block",
 ];
 
-test("frame-driven objects do not restart CSS position transitions", async () => {
+async function readStyleRules() {
   const css = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
-  const rules = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((match) => ({
+  return [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((match) => ({
     selectors: match[1].split(",").map((value) => value.trim()),
     declarations: match[2],
   }));
+}
+
+test("frame-driven objects do not restart CSS position transitions", async () => {
+  const rules = await readStyleRules();
 
   for (const selector of animatedSelectors) {
     const matchingRules = rules.filter((rule) => rule.selectors.includes(selector));
@@ -32,5 +36,19 @@ test("frame-driven objects do not restart CSS position transitions", async () =>
       matchingRules.some((rule) => /will-change\s*:/.test(rule.declarations)),
       `Expected ${selector} to declare its changing position`,
     );
+  }
+});
+
+test("incline block and trail inherit the ramp rotation", async () => {
+  const rules = await readStyleRules();
+
+  for (const selector of [".incline-block", ".incline-ghost"]) {
+    const declarations = rules
+      .filter((rule) => rule.selectors.includes(selector))
+      .map((rule) => rule.declarations)
+      .join("\n");
+
+    assert.doesNotMatch(declarations, /transform\s*:/);
+    assert.doesNotMatch(declarations, /block-counter-angle/);
   }
 });

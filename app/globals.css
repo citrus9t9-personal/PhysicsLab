@@ -818,7 +818,6 @@ h1 em {
 }
 
 .incline-block {
-  --block-counter-angle: 28deg;
   position: absolute;
   bottom: 4px;
   width: 55px;
@@ -829,12 +828,10 @@ h1 em {
   box-shadow: 4px 4px 0 var(--ink);
   display: grid;
   place-items: center;
-  transform: rotate(var(--block-counter-angle));
   will-change: left;
 }
 
 .incline-ghost {
-  --block-counter-angle: 28deg;
   position: absolute;
   bottom: 4px;
   width: 51px;
@@ -842,7 +839,6 @@ h1 em {
   margin-left: -25px;
   border: 2px dashed var(--orange);
   background: rgba(237, 90, 50, 0.08);
-  transform: rotate(var(--block-counter-angle));
 }
 
 .ramp-distance {
@@ -1259,6 +1255,15 @@ h1 em {
 .graph-header > div:first-child {
   display: grid;
   gap: 3px;
+}
+
+.graph-header small {
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.5rem;
+  font-weight: 750;
+  letter-spacing: 0.035em;
+  text-transform: uppercase;
 }
 
 .graph-header span,

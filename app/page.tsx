@@ -15,6 +15,7 @@ import {
   resolveBlockCollision,
   springMotion,
 } from "./physics.mjs";
+import { getFixedGraphScale, revealGraphSamples } from "./graph.mjs";
 
 type ScenarioId = "projectile" | "incline" | "pulley" | "collision" | "spring";
 type RunState = "ready" | "running" | "paused" | "complete";
@@ -571,9 +572,9 @@ function WorldScene({
         <div className="incline-rig" style={{ "--ramp-angle": `${-values.inclineAngle}deg` } as CSSProperties}>
           <div className="ramp-surface" />
           {progress > 0.02 && Array.from({ length: 5 }, (_, index) => (
-            <i key={index} className="incline-ghost" style={{ left: `${82 - progress * (index / 5) * 76}%`, opacity: 0.12 + index * 0.08, "--block-counter-angle": `${values.inclineAngle}deg` } as CSSProperties} />
+            <i key={index} className="incline-ghost" style={{ left: `${82 - progress * (index / 5) * 76}%`, opacity: 0.12 + index * 0.08 }} />
           ))}
-          <div className="incline-block" style={{ left: `${82 - progress * 76}%`, "--block-counter-angle": `${values.inclineAngle}deg` } as CSSProperties}><span>m</span></div>
+          <div className="incline-block" style={{ left: `${82 - progress * 76}%` }}><span>m</span></div>
           <span className="ramp-distance ramp-start">0 m</span><span className="ramp-distance ramp-end">6 m</span>
         </div>
         <div className="angle-marker">θ = {values.inclineAngle.toFixed(0)}°</div>
@@ -668,13 +669,8 @@ function GraphCanvas({
       const padding = { top: 28, right: 24, bottom: 38, left: 56 };
       const plotWidth = width - padding.left - padding.right;
       const plotHeight = height - padding.top - padding.bottom;
-      const values = samples.map((sample) => sample[metric]);
-      let min = Math.min(0, ...values);
-      let max = Math.max(0, ...values);
-      if (Math.abs(max - min) < 0.001) { max += 1; min -= 1; }
-      const margin = (max - min) * 0.12;
-      max += margin;
-      min -= margin;
+      const { min, max } = getFixedGraphScale(samples, metric);
+      const visibleSamples = revealGraphSamples(samples, metric, currentTime);
 
       context.clearRect(0, 0, width, height);
       context.strokeStyle = "rgba(20, 32, 31, 0.12)";
@@ -696,12 +692,20 @@ function GraphCanvas({
       context.lineWidth = 3;
       context.lineJoin = "round";
       context.beginPath();
-      samples.forEach((sample, index) => {
+      visibleSamples.forEach((sample, index) => {
         const x = padding.left + (sample.time / duration) * plotWidth;
-        const y = padding.top + ((max - sample[metric]) / (max - min)) * plotHeight;
+        const y = padding.top + ((max - sample.value) / (max - min)) * plotHeight;
         if (index === 0) context.moveTo(x, y); else context.lineTo(x, y);
       });
       context.stroke();
+
+      const currentPoint = visibleSamples.at(-1);
+      if (currentPoint) {
+        const pointX = padding.left + (currentPoint.time / duration) * plotWidth;
+        const pointY = padding.top + ((max - currentPoint.value) / (max - min)) * plotHeight;
+        context.fillStyle = "#ed5a32";
+        context.beginPath(); context.arc(pointX, pointY, 4, 0, Math.PI * 2); context.fill();
+      }
 
       const markerX = padding.left + (currentTime / duration) * plotWidth;
       context.strokeStyle = "#1a4b43";
@@ -724,7 +728,7 @@ function GraphCanvas({
     return () => observer.disconnect();
   }, [samples, metric, currentTime, duration]);
 
-  return <canvas ref={canvasRef} className="graph-canvas" role="img" aria-label={`${metric} versus time graph with a marker at ${currentTime.toFixed(2)} seconds`} />;
+  return <canvas ref={canvasRef} className="graph-canvas" role="img" aria-label={`${metric} versus time graph drawn through ${currentTime.toFixed(2)} seconds on a fixed full-experiment scale`} />;
 }
 
 function Vector({ label, angle, tone = "green" }: { label: string; angle: number; tone?: "green" | "orange" | "blue" }) {
@@ -1108,6 +1112,7 @@ export default function Home() {
                 <div>
                   <span>Live graph</span>
                   <strong>{graphMetric} / time</strong>
+                  <small>Fixed full-run scale · {Math.round((time / duration) * 100)}% drawn</small>
                 </div>
                 <div className="metric-tabs" role="group" aria-label="Graph quantity">
                   {(["position", "velocity", "acceleration"] as GraphMetric[]).map((metric) => (
@@ -1116,7 +1121,7 @@ export default function Home() {
                 </div>
               </div>
               <GraphCanvas samples={samples} metric={graphMetric} currentTime={time} duration={duration} />
-              <div className="graph-legend"><span><i /> calculated curve</span><span><i /> current moment</span></div>
+              <div className="graph-legend"><span><i /> revealed motion</span><span><i /> current moment</span></div>
             </div>
           )}
 
