@@ -16,8 +16,10 @@ import {
   springMotion,
 } from "./physics.mjs";
 import { getFixedGraphScale, revealGraphSamples } from "./graph.mjs";
+import SandboxLab from "./sandbox";
 
 type ScenarioId = "projectile" | "incline" | "pulley" | "collision" | "spring";
+type WorkspaceMode = "guided" | "sandbox";
 type RunState = "ready" | "running" | "paused" | "complete";
 type ViewMode = "motion" | "graphs";
 type GraphMetric = "position" | "velocity" | "acceleration";
@@ -921,6 +923,7 @@ function LabNotebook({
 }
 
 export default function Home() {
+  const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("guided");
   const [scenario, setScenario] = useState<ScenarioId>("projectile");
   const [values, setValues] = useState<LabValues>(INITIAL_VALUES);
   const [collisionMode, setCollisionModeState] = useState<CollisionMode>("elastic");
@@ -1061,7 +1064,7 @@ export default function Home() {
   return (
     <main className="app-shell">
       <header className="topbar">
-        <a className="brand" href="#lab" aria-label="Motion Lab home">
+        <a className="brand" href="#workspace" aria-label="Motion Lab home">
           <span className="brand-mark" aria-hidden="true"><i /><i /><i /></span>
           <span>MOTION<strong>LAB</strong></span>
         </a>
@@ -1076,15 +1079,22 @@ export default function Home() {
         <p>Build a scenario, run time forward, and capture exact moments to compare the motion with forces, energy, and graphs.</p>
       </section>
 
-      <nav className="scenario-nav" aria-label="Physics scenarios">
-        {SCENARIOS.map((item) => (
-          <button key={item.id} type="button" className={scenario === item.id ? "active" : ""} onClick={() => chooseScenario(item.id)} aria-pressed={scenario === item.id}>
-            <span>{item.number}</span><strong>{item.shortName}</strong><small>{item.name}</small>
-          </button>
-        ))}
-      </nav>
+      <div className="workspace-mode" id="workspace" role="group" aria-label="Workspace mode">
+        <button type="button" className={workspaceMode === "guided" ? "active" : ""} onClick={() => setWorkspaceMode("guided")} aria-pressed={workspaceMode === "guided"}><span>01—05</span><strong>Guided experiments</strong><small>Preset AP Physics scenarios</small></button>
+        <button type="button" className={workspaceMode === "sandbox" ? "active" : ""} onClick={() => { setWorkspaceMode("sandbox"); setRunState("paused"); }} aria-pressed={workspaceMode === "sandbox"}><span>∞</span><strong>Sandbox mode</strong><small>Drag, connect, and build freely</small></button>
+      </div>
 
-      <section className="lab" id="lab">
+      {workspaceMode === "guided" ? (
+        <>
+          <nav className="scenario-nav" aria-label="Physics scenarios">
+            {SCENARIOS.map((item) => (
+              <button key={item.id} type="button" className={scenario === item.id ? "active" : ""} onClick={() => chooseScenario(item.id)} aria-pressed={scenario === item.id}>
+                <span>{item.number}</span><strong>{item.shortName}</strong><small>{item.name}</small>
+              </button>
+            ))}
+          </nav>
+
+          <section className="lab" id="lab">
         <aside className="setup-panel">
           <div className="section-heading"><span>Experiment setup</span><strong>{definition.number}</strong></div>
           <h2>{definition.name}</h2>
@@ -1153,14 +1163,18 @@ export default function Home() {
           <div className="fbd-heading"><span>Free-body diagram</span><small>{runState === "running" ? "Pause to inspect" : "Live snapshot"}</small></div>
           <ForceDiagram scenario={scenario} values={values} frame={frame} trackedObject={trackedObject} time={time} />
         </aside>
-      </section>
+          </section>
 
-      <LabNotebook snapshots={snapshots} comparisonIds={comparisonIds} onRestore={restoreSnapshot} onRemove={removeSnapshot} onToggleComparison={toggleComparison} onClear={clearSnapshots} />
+          <LabNotebook snapshots={snapshots} comparisonIds={comparisonIds} onRestore={restoreSnapshot} onRemove={removeSnapshot} onToggleComparison={toggleComparison} onClear={clearSnapshots} />
+        </>
+      ) : (
+        <SandboxLab />
+      )}
 
       <footer>
         <span>MOTIONLAB · CAPSTONE PROTOTYPE</span>
         <p>Idealized AP Physics 1 models · no air resistance unless specified</p>
-        <span>5 EXPERIMENTS / 1 WORKSPACE</span>
+        <span>5 EXPERIMENTS + 1 SANDBOX</span>
       </footer>
       <p className="sr-only" aria-live="polite">{announcement} Simulation {runState} at {time.toFixed(2)} seconds.</p>
     </main>

@@ -35,6 +35,8 @@ test("server-renders the complete MotionLab simulator", async () => {
   assert.match(html, /Pulleys/);
   assert.match(html, /Collisions/);
   assert.match(html, /Springs/);
+  assert.match(html, /Sandbox mode/);
+  assert.match(html, /Drag, connect, and build freely/);
   assert.match(html, /Run experiment/);
   assert.match(html, /past position/);
   assert.match(html, /apex · vᵧ = 0/);

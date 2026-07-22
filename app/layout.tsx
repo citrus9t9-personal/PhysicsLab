@@ -13,11 +13,11 @@ export async function generateMetadata(): Promise<Metadata> {
   return {
     title: "MotionLab — Interactive AP Physics Simulator",
     description:
-      "Run, pause, capture, and compare AP Physics 1 experiments with live measurements, free-body diagrams, and graphs.",
+      "Run guided AP Physics 1 experiments or build drag-and-drop systems with live motion, forces, graphs, and adjustable starting conditions.",
     openGraph: {
       title: "MotionLab — See the Forces Behind the Motion",
       description:
-        "Explore kinematics, slopes, pulleys, collisions, and springs in one interactive physics workspace.",
+        "Explore guided experiments or build custom physics systems in a drag-and-drop sandbox.",
       type: "website",
       images: [
         {
@@ -32,7 +32,7 @@ export async function generateMetadata(): Promise<Metadata> {
       card: "summary_large_image",
       title: "MotionLab — See the Forces Behind the Motion",
       description:
-        "Interactive AP Physics 1 experiments with live forces, values, and graphs.",
+        "Guided AP Physics 1 experiments and a drag-and-drop sandbox with live forces, values, and graphs.",
       images: [origin + "/og-motionlab.png"],
     },
   };
