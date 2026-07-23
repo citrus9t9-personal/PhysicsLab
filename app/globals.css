@@ -2178,6 +2178,7 @@ h1 em {
 
 .sandbox-toolbar-meta label { display: inline-flex; align-items: center; gap: 5px; }
 .sandbox-toolbar-meta select { border: 1px solid var(--line-dark); background: var(--surface); color: var(--ink); }
+.sandbox-hitbox-toggle input { accent-color: var(--orange); }
 
 .sandbox-stage {
   position: relative;
@@ -2245,6 +2246,11 @@ h1 em {
   outline-offset: 5px;
 }
 
+.sandbox-entity.pulley-target .sandbox-shape {
+  outline: 4px dashed var(--blue);
+  outline-offset: 6px;
+}
+
 .sandbox-shape {
   position: absolute;
   inset: 0;
@@ -2252,6 +2258,37 @@ h1 em {
   background: var(--orange);
   box-shadow: 4px 4px 0 var(--ink);
   pointer-events: none;
+}
+
+.sandbox-hitbox {
+  position: absolute;
+  z-index: 20;
+  inset: 0;
+  border: 2px dashed var(--blue);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.show-hitboxes .sandbox-hitbox { opacity: 0.9; }
+.show-hitboxes .entity-ball .sandbox-hitbox,
+.show-hitboxes .entity-wheel .sandbox-hitbox,
+.show-hitboxes .entity-pulley .sandbox-hitbox,
+.show-hitboxes .entity-collision-target .sandbox-hitbox { border-radius: 50%; }
+
+.show-hitboxes .sandbox-hitbox::after {
+  content: "hitbox";
+  position: absolute;
+  left: 50%;
+  top: -17px;
+  padding: 1px 3px;
+  background: var(--blue);
+  color: white;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.42rem;
+  font-weight: 850;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  transform: translateX(-50%) rotate(var(--counter-entity-angle));
 }
 
 .sandbox-entity > small {
@@ -2441,6 +2478,44 @@ h1 em {
   background: var(--green);
   box-shadow: 0 0 0 2px var(--ink);
   cursor: crosshair;
+}
+
+.sandbox-rope-layer {
+  position: absolute;
+  z-index: 6;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.sandbox-rope {
+  cursor: pointer;
+  outline: none;
+  pointer-events: stroke;
+}
+
+.sandbox-rope-hit {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 2.4;
+}
+
+.sandbox-rope-line {
+  fill: none;
+  stroke: var(--ink);
+  stroke-width: 0.44;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+  pointer-events: none;
+}
+
+.sandbox-rope.selected .sandbox-rope-line,
+.sandbox-rope:focus-visible .sandbox-rope-line {
+  stroke: var(--orange);
+  stroke-width: 0.68;
 }
 
 .sandbox-link {
@@ -2635,6 +2710,66 @@ h1 em {
   font-weight: 750;
 }
 
+.sandbox-route-summary {
+  margin-bottom: 9px;
+  padding: 9px;
+  border: 1px solid var(--line-dark);
+  background: var(--green-soft);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow-x: auto;
+}
+
+.sandbox-route-summary span {
+  min-width: max-content;
+  display: grid;
+  gap: 2px;
+}
+
+.sandbox-route-summary small {
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.44rem;
+  font-weight: 750;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.sandbox-route-summary strong {
+  font-size: 0.56rem;
+  letter-spacing: 0.025em;
+  text-transform: uppercase;
+}
+
+.sandbox-route-summary i {
+  color: var(--orange);
+  font-style: normal;
+  font-weight: 900;
+}
+
+.sandbox-route-actions {
+  padding-top: 10px;
+  display: grid;
+  gap: 6px;
+}
+
+.sandbox-route-actions button {
+  min-height: 38px;
+  padding: 0 9px;
+  border: 1px solid var(--ink);
+  background: var(--surface);
+  color: var(--ink);
+  cursor: pointer;
+  font-size: 0.54rem;
+  font-weight: 850;
+  letter-spacing: 0.045em;
+  text-transform: uppercase;
+}
+
+.sandbox-route-actions button:first-child,
+.sandbox-route-actions button.active { background: var(--green-soft); }
+
 .sandbox-delete {
   width: 100%;
   min-height: 40px;
@@ -2716,6 +2851,8 @@ footer p {
   }
 
   .sandbox-selection-name,
+  .sandbox-route-summary,
+  .sandbox-route-actions,
   .sandbox-delete {
     grid-column: 1 / -1;
   }

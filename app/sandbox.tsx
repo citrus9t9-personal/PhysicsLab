@@ -15,6 +15,7 @@ import {
   WORLD_SCALE,
   createSandboxItem,
   createStarterSandbox,
+  getRopeRoute,
   isDynamicItem,
   resetSandbox,
   stepSandbox,
@@ -56,6 +57,7 @@ interface SandboxLink {
   b: string;
   naturalLength: number;
   springConstant: number;
+  pulleys: Array<{ id: string; direction: number }>;
 }
 
 const ICONS: Record<string, string> = {
@@ -107,8 +109,8 @@ function NumberControl({
 }
 
 function entityDimensions(item: SandboxItem) {
-  if (item.type === "platform" || item.type === "incline") return { width: clamp(item.size * 28, 90, 230), height: 25 };
-  if (item.type === "rod") return { width: clamp(item.size * 30, 80, 210), height: 24 };
+  if (item.type === "platform" || item.type === "incline") return { width: clamp(item.size * 42, 90, 310), height: 25 };
+  if (item.type === "rod") return { width: clamp(item.size * 42, 80, 300), height: 24 };
   if (item.type === "gravity-region") {
     const size = clamp(item.size * 22, 105, 240);
     return { width: size, height: size };
@@ -143,6 +145,11 @@ function linkLength(a: SandboxItem, b: SandboxItem) {
   return Math.max(0.25, Math.hypot(b.x - a.x, b.y - a.y) / WORLD_SCALE);
 }
 
+function ropePath(points: Array<{ x: number; y: number }>) {
+  if (points.length < 2) return "";
+  return points.map((point, index) => `${index === 0 ? "M" : "L"} ${point.x.toFixed(3)} ${point.y.toFixed(3)}`).join(" ");
+}
+
 export default function SandboxLab() {
   const [items, setItems] = useState<SandboxItem[]>(() => createStarterSandbox());
   const [links, setLinks] = useState<SandboxLink[]>([]);
@@ -150,6 +157,9 @@ export default function SandboxLab() {
   const [selectedLinkId, setSelectedLinkId] = useState<string | null>(null);
   const [connectorTool, setConnectorTool] = useState<ConnectorType | null>(null);
   const [linkStartId, setLinkStartId] = useState<string | null>(null);
+  const [linkPulleyIds, setLinkPulleyIds] = useState<string[]>([]);
+  const [pulleyLinkId, setPulleyLinkId] = useState<string | null>(null);
+  const [showHitboxes, setShowHitboxes] = useState(false);
   const [running, setRunning] = useState(false);
   const [playbackSpeed, setPlaybackSpeed] = useState(1);
   const stageRef = useRef<HTMLDivElement>(null);
@@ -182,12 +192,15 @@ export default function SandboxLab() {
   const selectItem = (id: string) => {
     setSelectedItemId(id);
     setSelectedLinkId(null);
+    setPulleyLinkId(null);
   };
 
   const addTool = (type: string, x?: number, y?: number) => {
     if (type === "rope" || type === "spring") {
       setConnectorTool(type);
       setLinkStartId(null);
+      setLinkPulleyIds([]);
+      setPulleyLinkId(null);
       setRunning(false);
       return;
     }
@@ -236,45 +249,99 @@ export default function SandboxLab() {
   const removeSelected = () => {
     if (selectedItemId) {
       setItems((current) => current.filter((item) => item.id !== selectedItemId));
-      setLinks((current) => current.filter((link) => link.a !== selectedItemId && link.b !== selectedItemId));
+      setLinks((current) => current
+        .filter((link) => link.a !== selectedItemId && link.b !== selectedItemId)
+        .map((link) => ({ ...link, pulleys: link.pulleys.filter((pulley) => pulley.id !== selectedItemId) })));
       setSelectedItemId(null);
     }
     if (selectedLinkId) {
       setLinks((current) => current.filter((link) => link.id !== selectedLinkId));
       setSelectedLinkId(null);
     }
+    setPulleyLinkId(null);
     setRunning(false);
   };
 
-  const createLink = (sourceId: string, targetId: string, type = connectorTool) => {
+  const createLink = (sourceId: string, targetId: string, type = connectorTool, pulleyIds = linkPulleyIds) => {
     if (!type || sourceId === targetId) return;
     const a = itemsById.get(sourceId);
     const b = itemsById.get(targetId);
     if (!a || !b) return;
     const id = `sandbox-link-${counterRef.current}`;
     counterRef.current += 1;
-    const link: SandboxLink = {
+    const draft: SandboxLink = {
       id,
       type,
       a: sourceId,
       b: targetId,
-      naturalLength: linkLength(a, b),
+      naturalLength: 1,
       springConstant: 18,
+      pulleys: type === "rope" ? pulleyIds.map((pulleyId) => ({ id: pulleyId, direction: 0 })) : [],
+    };
+    const link = {
+      ...draft,
+      naturalLength: type === "rope"
+        ? Math.max(0.25, getRopeRoute(items, draft).lengthMeters)
+        : linkLength(a, b),
     };
     setLinks((current) => [...current, link]);
     setSelectedLinkId(id);
     setSelectedItemId(null);
     setConnectorTool(null);
     setLinkStartId(null);
+    setLinkPulleyIds([]);
+    setPulleyLinkId(null);
   };
 
   const chooseEndpoint = (id: string) => {
     if (!connectorTool) return;
+    const item = itemsById.get(id);
+    if (!item) return;
+    if (connectorTool === "rope" && item.type === "pulley") {
+      if (linkStartId && !linkPulleyIds.includes(id)) {
+        setLinkPulleyIds((current) => [...current, id]);
+      }
+      return;
+    }
     if (!linkStartId) {
       setLinkStartId(id);
       return;
     }
-    createLink(linkStartId, id);
+    createLink(linkStartId, id, connectorTool, linkPulleyIds);
+  };
+
+  const addPulleyToLink = (linkId: string, pulleyId: string) => {
+    const pulley = itemsById.get(pulleyId);
+    if (pulley?.type !== "pulley") return;
+    setLinks((current) => current.map((link) => {
+      if (link.id !== linkId || link.type !== "rope" || link.pulleys.some((stop) => stop.id === pulleyId)) return link;
+      const pulleys = [...link.pulleys, { id: pulleyId, direction: 0 }];
+      const routed = { ...link, pulleys };
+      return { ...routed, naturalLength: Math.max(0.25, getRopeRoute(items, routed).lengthMeters) };
+    }));
+    setSelectedItemId(null);
+    setSelectedLinkId(linkId);
+    setPulleyLinkId(null);
+    setRunning(false);
+  };
+
+  const updatePulleyRoute = (linkId: string, action: "flip" | "remove") => {
+    setLinks((current) => current.map((link) => {
+      if (link.id !== linkId || link.type !== "rope" || link.pulleys.length === 0) return link;
+      const pulleys = link.pulleys.slice();
+      if (action === "remove") {
+        pulleys.pop();
+      } else {
+        const last = pulleys.at(-1);
+        if (last) {
+          const currentDirection = last.direction || getRopeRoute(items, link).wraps.at(-1)?.direction || 1;
+          pulleys[pulleys.length - 1] = { ...last, direction: -currentDirection };
+        }
+      }
+      const routed = { ...link, pulleys };
+      return { ...routed, naturalLength: Math.max(0.25, getRopeRoute(items, routed).lengthMeters) };
+    }));
+    setRunning(false);
   };
 
   const handlePortDrag = (event: DragEvent<HTMLButtonElement>, id: string) => {
@@ -288,10 +355,23 @@ export default function SandboxLab() {
     event.preventDefault();
     event.stopPropagation();
     const sourceId = event.dataTransfer.getData("application/x-motionlab-link-source");
-    if (sourceId) createLink(sourceId, targetId);
+    const target = itemsById.get(targetId);
+    if (!sourceId || !target) return;
+    if (connectorTool === "rope" && target.type === "pulley") {
+      setLinkStartId(sourceId);
+      setLinkPulleyIds((current) => current.includes(targetId) ? current : [...current, targetId]);
+      return;
+    }
+    createLink(sourceId, targetId, connectorTool, linkPulleyIds);
   };
 
   const beginItemDrag = (event: PointerEvent<HTMLDivElement>, item: SandboxItem) => {
+    if (pulleyLinkId) {
+      event.preventDefault();
+      connectorClickRef.current = item.id;
+      if (item.type === "pulley") addPulleyToLink(pulleyLinkId, item.id);
+      return;
+    }
     if (connectorTool) {
       event.preventDefault();
       connectorClickRef.current = item.id;
@@ -336,6 +416,8 @@ export default function SandboxLab() {
     setSelectedLinkId(null);
     setConnectorTool(null);
     setLinkStartId(null);
+    setLinkPulleyIds([]);
+    setPulleyLinkId(null);
     setRunning(false);
   };
 
@@ -346,6 +428,8 @@ export default function SandboxLab() {
     setSelectedLinkId(null);
     setConnectorTool(null);
     setLinkStartId(null);
+    setLinkPulleyIds([]);
+    setPulleyLinkId(null);
     setRunning(false);
   };
 
@@ -389,12 +473,17 @@ export default function SandboxLab() {
               <button type="button" onClick={() => { setRunning(false); setItems((current) => stepSandbox(current, links, 1 / 30)); }}>Step</button>
               <button type="button" onClick={reset}>Reset</button>
             </div>
-            <div className="sandbox-toolbar-meta"><span>{dynamicCount} moving</span><span>{links.length} connected</span><label>Speed <select value={playbackSpeed} onChange={(event) => setPlaybackSpeed(Number(event.target.value))}><option value={0.5}>0.5×</option><option value={1}>1×</option><option value={2}>2×</option></select></label></div>
+            <div className="sandbox-toolbar-meta">
+              <span>{dynamicCount} moving</span>
+              <span>{links.length} connected</span>
+              <label className="sandbox-hitbox-toggle"><input type="checkbox" checked={showHitboxes} onChange={(event) => setShowHitboxes(event.target.checked)} /> Hitboxes</label>
+              <label>Speed <select value={playbackSpeed} onChange={(event) => setPlaybackSpeed(Number(event.target.value))}><option value={0.5}>0.5×</option><option value={1}>1×</option><option value={2}>2×</option></select></label>
+            </div>
           </div>
 
           <div
             ref={stageRef}
-            className={`sandbox-stage ${connectorTool ? "connecting" : ""}`}
+            className={`sandbox-stage ${connectorTool || pulleyLinkId ? "connecting" : ""} ${showHitboxes ? "show-hitboxes" : ""}`}
             onDragOver={(event) => event.preventDefault()}
             onDrop={handleStageDrop}
             role="application"
@@ -402,11 +491,35 @@ export default function SandboxLab() {
           >
             <div className="sandbox-grid" />
             <div className="sandbox-floor"><span>floor</span></div>
-            {links.map((link) => {
+            <svg className="sandbox-rope-layer" viewBox="0 0 100 100" preserveAspectRatio="none" aria-label="Rope connections">
+              {links.filter((link) => link.type === "rope").map((link) => {
+                const a = itemsById.get(link.a);
+                const b = itemsById.get(link.b);
+                const route = getRopeRoute(items, link);
+                if (!a || !b || route.points.length < 2) return null;
+                const path = ropePath(route.points);
+                const select = () => { setSelectedLinkId(link.id); setSelectedItemId(null); setPulleyLinkId(null); };
+                return (
+                  <g
+                    key={link.id}
+                    className={`sandbox-rope ${selectedLinkId === link.id ? "selected" : ""}`}
+                    role="button"
+                    tabIndex={0}
+                    aria-label={`Select rope from ${a.label} to ${b.label}${link.pulleys.length ? ` through ${link.pulleys.length} pulley` : ""}`}
+                    onClick={select}
+                    onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); select(); } }}
+                  >
+                    <path className="sandbox-rope-hit" d={path} />
+                    <path className="sandbox-rope-line" d={path} />
+                  </g>
+                );
+              })}
+            </svg>
+            {links.filter((link) => link.type === "spring").map((link) => {
               const a = itemsById.get(link.a);
               const b = itemsById.get(link.b);
               if (!a || !b) return null;
-              return <button key={link.id} type="button" className={`sandbox-link link-${link.type} ${selectedLinkId === link.id ? "selected" : ""}`} style={linkStyle(a, b)} onClick={() => { setSelectedLinkId(link.id); setSelectedItemId(null); }} aria-label={`Select ${link.type} connecting ${a.label} and ${b.label}`} />;
+              return <button key={link.id} type="button" className={`sandbox-link link-${link.type} ${selectedLinkId === link.id ? "selected" : ""}`} style={linkStyle(a, b)} onClick={() => { setSelectedLinkId(link.id); setSelectedItemId(null); setPulleyLinkId(null); }} aria-label={`Select ${link.type} connecting ${a.label} and ${b.label}`} />;
             })}
             {items.map((item) => {
               const dimensions = entityDimensions(item);
@@ -415,7 +528,7 @@ export default function SandboxLab() {
               return (
                 <div
                   key={item.id}
-                  className={`sandbox-entity entity-${item.type} ${selectedItemId === item.id ? "selected" : ""} ${linkStartId === item.id ? "link-start" : ""}`}
+                  className={`sandbox-entity entity-${item.type} ${selectedItemId === item.id ? "selected" : ""} ${linkStartId === item.id ? "link-start" : ""} ${pulleyLinkId && item.type === "pulley" ? "pulley-target" : ""}`}
                   style={{ left: `${item.x}%`, top: `${item.y}%`, width: `${dimensions.width}px`, height: `${dimensions.height}px`, transform: itemTransform(item), "--entity-angle": `${visualAngle}deg`, "--counter-entity-angle": `${-visualAngle}deg`, "--pendulum-angle": `${item.angle}deg` } as CSSProperties}
                   role="button"
                   tabIndex={0}
@@ -425,9 +538,15 @@ export default function SandboxLab() {
                       connectorClickRef.current = null;
                       return;
                     }
-                    if (!connectorTool) selectItem(item.id);
+                    if (!connectorTool && !pulleyLinkId) selectItem(item.id);
                   }}
-                  onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); connectorTool ? chooseEndpoint(item.id) : selectItem(item.id); } }}
+                  onKeyDown={(event) => {
+                    if (event.key !== "Enter" && event.key !== " ") return;
+                    event.preventDefault();
+                    if (pulleyLinkId && item.type === "pulley") addPulleyToLink(pulleyLinkId, item.id);
+                    else if (connectorTool) chooseEndpoint(item.id);
+                    else if (!pulleyLinkId) selectItem(item.id);
+                  }}
                   onPointerDown={(event) => beginItemDrag(event, item)}
                   onPointerMove={moveItem}
                   onPointerUp={endItemDrag}
@@ -443,14 +562,37 @@ export default function SandboxLab() {
                     {item.type === "gravity-region" && <b style={{ transform: `rotate(${item.gravityDirection - 90}deg)` }}>↓</b>}
                     {item.type === "collision-target" && <i />}
                   </span>
+                  {(["block", "ball", "cart", "rod", "wheel", "platform", "incline", "pulley", "collision-target"].includes(item.type)) && <span className="sandbox-hitbox" aria-hidden="true" />}
                   {isDynamicItem(item) && speed > 0.08 && <span className="sandbox-velocity" style={{ "--velocity-angle": `${Math.atan2(item.vy, item.vx)}rad`, "--velocity-length": `${clamp(speed * 9, 26, 78)}px` } as CSSProperties}><i>{speed.toFixed(1)} m/s</i></span>}
-                  {connectorTool && <button type="button" draggable className="sandbox-link-port" onDragStart={(event) => handlePortDrag(event, item.id)} onClick={(event) => { event.stopPropagation(); chooseEndpoint(item.id); }} aria-label={`Start ${connectorTool} connection from ${item.label}`} />}
+                  {(connectorTool || (pulleyLinkId && item.type === "pulley")) && <button
+                    type="button"
+                    draggable={Boolean(connectorTool)}
+                    className="sandbox-link-port"
+                    onDragStart={(event) => connectorTool && handlePortDrag(event, item.id)}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      if (pulleyLinkId) addPulleyToLink(pulleyLinkId, item.id);
+                      else chooseEndpoint(item.id);
+                    }}
+                    aria-label={pulleyLinkId ? `Route selected rope around ${item.label}` : `Use ${item.label} for ${connectorTool} connection`}
+                  />}
                   <small>{item.label}</small>
                 </div>
               );
             })}
             {items.length === 0 && <div className="sandbox-empty"><strong>Drop an object anywhere.</strong><span>Start with a block, ball, platform, or gravity region.</span></div>}
-            {connectorTool && <div className="sandbox-connect-note"><strong>{connectorTool === "rope" ? "Rope" : "Spring"} tool armed</strong><span>{linkStartId ? "Choose the second object." : "Drag a green port between objects, or tap two objects."}</span><button type="button" onClick={() => { setConnectorTool(null); setLinkStartId(null); }}>Cancel</button></div>}
+            {connectorTool && <div className="sandbox-connect-note">
+              <strong>{connectorTool === "rope" ? "Rope" : "Spring"} tool armed</strong>
+              <span>{!linkStartId
+                ? "Choose the starting object."
+                : connectorTool === "rope" && linkPulleyIds.length
+                  ? `${linkPulleyIds.length} pulley ${linkPulleyIds.length === 1 ? "wrap" : "wraps"} added. Choose the ending object.`
+                  : connectorTool === "rope"
+                    ? "Choose the ending object, or tap a pulley to route around it."
+                    : "Choose the ending object."}</span>
+              <button type="button" onClick={() => { setConnectorTool(null); setLinkStartId(null); setLinkPulleyIds([]); }}>Cancel</button>
+            </div>}
+            {pulleyLinkId && <div className="sandbox-connect-note"><strong>Connect rope to pulley</strong><span>Choose a pulley. The rope will wrap around its rim instead of attaching to its center.</span><button type="button" onClick={() => setPulleyLinkId(null)}>Cancel</button></div>}
           </div>
 
           <div className="sandbox-stage-actions"><button type="button" onClick={loadStarter}>Load starter setup</button><button type="button" onClick={clear}>Clear canvas</button><span>Drag objects to set their starting positions.</span></div>
@@ -465,7 +607,7 @@ export default function SandboxLab() {
               {!(["pivot"].includes(selectedItem.type)) && <NumberControl label={selectedItem.type === "platform" || selectedItem.type === "incline" || selectedItem.type === "rod" ? "Length" : "Size"} value={selectedItem.size} min={0.5} max={8} step={0.1} unit="m" onChange={(value) => updateItem(selectedItem.id, "size", value)} />}
               {isDynamicItem(selectedItem) && <><NumberControl label="Initial velocity x" value={selectedItem.initialVx} min={-10} max={10} step={0.25} unit="m/s" onChange={(value) => updateItem(selectedItem.id, "vx", value)} />{selectedItem.type !== "cart" && <NumberControl label="Initial velocity y" value={selectedItem.initialVy} min={-10} max={10} step={0.25} unit="m/s" onChange={(value) => updateItem(selectedItem.id, "vy", value)} />}</>}
               {(["block", "cart", "platform", "incline"].includes(selectedItem.type)) && <NumberControl label="Friction μ" value={selectedItem.friction} min={0} max={1} step={0.01} unit="" onChange={(value) => updateItem(selectedItem.id, "friction", value)} />}
-              {(["incline", "rod", "pendulum"].includes(selectedItem.type)) && <NumberControl label="Starting angle" value={selectedItem.initialAngle} min={-75} max={75} step={1} unit="°" onChange={(value) => updateItem(selectedItem.id, "angle", value)} />}
+              {(["incline", "rod", "pendulum", "platform"].includes(selectedItem.type)) && <NumberControl label={selectedItem.type === "platform" ? "Surface angle" : "Starting angle"} value={selectedItem.initialAngle} min={selectedItem.type === "platform" ? -90 : -75} max={selectedItem.type === "platform" ? 90 : 75} step={1} unit="°" onChange={(value) => updateItem(selectedItem.id, "angle", value)} />}
               {selectedItem.type === "pendulum" && <NumberControl label="Pendulum length" value={selectedItem.length} min={0.5} max={5} step={0.1} unit="m" onChange={(value) => updateItem(selectedItem.id, "length", value)} />}
               {(["wheel", "pulley", "circular-track"].includes(selectedItem.type)) && <NumberControl label="Radius" value={selectedItem.radius} min={0.3} max={4} step={0.1} unit="m" onChange={(value) => updateItem(selectedItem.id, "radius", value)} />}
               {(["wheel", "rod"].includes(selectedItem.type)) && <NumberControl label="Rotational inertia" value={selectedItem.inertia} min={0.1} max={10} step={0.1} unit="kg·m²" onChange={(value) => updateItem(selectedItem.id, "inertia", value)} />}
@@ -475,9 +617,20 @@ export default function SandboxLab() {
             </div>
           ) : selectedLink ? (
             <div className="sandbox-properties">
-              <div className="sandbox-selection-name"><span aria-hidden="true">{ICONS[selectedLink.type]}</span><div><strong>{selectedLink.type === "rope" ? "Rope / string" : "Spring"}</strong><small>Connected constraint</small></div></div>
+              <div className="sandbox-selection-name"><span aria-hidden="true">{ICONS[selectedLink.type]}</span><div><strong>{selectedLink.type === "rope" ? "Rope / string" : "Spring"}</strong><small>{selectedLink.type === "rope" ? "Endpoint + pulley constraint" : "Connected constraint"}</small></div></div>
+              <div className="sandbox-route-summary">
+                <span><small>Start</small><strong>{itemsById.get(selectedLink.a)?.label ?? "Missing"}</strong></span>
+                <i aria-hidden="true">→</i>
+                {selectedLink.type === "rope" && selectedLink.pulleys.map((stop) => <span key={stop.id}><small>Pulley</small><strong>{itemsById.get(stop.id)?.label ?? "Missing"}</strong></span>)}
+                {selectedLink.type === "rope" && selectedLink.pulleys.length > 0 && <i aria-hidden="true">→</i>}
+                <span><small>End</small><strong>{itemsById.get(selectedLink.b)?.label ?? "Missing"}</strong></span>
+              </div>
               <NumberControl label="Natural length" value={selectedLink.naturalLength} min={0.25} max={12} step={0.05} unit="m" onChange={(value) => setLinks((current) => current.map((link) => link.id === selectedLink.id ? { ...link, naturalLength: value } : link))} />
               {selectedLink.type === "spring" && <NumberControl label="Spring constant" value={selectedLink.springConstant} min={2} max={80} step={1} unit="N/m" onChange={(value) => setLinks((current) => current.map((link) => link.id === selectedLink.id ? { ...link, springConstant: value } : link))} />}
+              {selectedLink.type === "rope" && <div className="sandbox-route-actions">
+                <button type="button" className={pulleyLinkId === selectedLink.id ? "active" : ""} aria-pressed={pulleyLinkId === selectedLink.id} onClick={() => { setPulleyLinkId((current) => current === selectedLink.id ? null : selectedLink.id); setConnectorTool(null); setLinkStartId(null); setLinkPulleyIds([]); setRunning(false); }}>Connect to pulley</button>
+                {selectedLink.pulleys.length > 0 && <><button type="button" onClick={() => updatePulleyRoute(selectedLink.id, "flip")}>Flip last wrap</button><button type="button" onClick={() => updatePulleyRoute(selectedLink.id, "remove")}>Remove last pulley</button></>}
+              </div>}
               <button type="button" className="sandbox-delete" onClick={removeSelected}>Remove connection</button>
             </div>
           ) : (
