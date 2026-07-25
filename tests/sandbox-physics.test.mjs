@@ -5,7 +5,9 @@ import {
   SANDBOX_TOOLS,
   collisionManifold,
   createSandboxItem,
+  findSnapPlacement,
   getItemHitbox,
+  getItemHitboxes,
   getRopeRoute,
   resetSandbox,
   stepSandbox,
@@ -89,6 +91,27 @@ test("ropes attach at object surfaces and wrap around a pulley rim", () => {
   }
 });
 
+test("multi-pulley rope routes preserve the visible start-to-end order", () => {
+  const start = createSandboxItem("block", "start", 15, 70);
+  const firstPulley = createSandboxItem("pulley", "first", 40, 35);
+  const secondPulley = createSandboxItem("pulley", "second", 62, 35);
+  const end = createSandboxItem("block", "end", 85, 70);
+  const route = getRopeRoute(
+    [start, firstPulley, secondPulley, end],
+    {
+      type: "rope",
+      a: "start",
+      b: "end",
+      naturalLength: 20,
+      pulleys: [{ id: "first", direction: 0 }, { id: "second", direction: 0 }],
+    },
+  );
+
+  assert.deepEqual(route.wraps.map((wrap) => wrap.id), ["first", "second"]);
+  assert.ok(route.points[0].x < firstPulley.x);
+  assert.ok(route.points.at(-1).x > secondPulley.x);
+});
+
 test("a rotated platform uses its rectangular hitbox as a wall", () => {
   const wall = createSandboxItem("platform", "wall", 52, 50);
   wall.angle = 90;
@@ -98,6 +121,53 @@ test("a rotated platform uses its rectangular hitbox as a wall", () => {
   const next = stepSandbox([wall, ball], [], 0.04).find((item) => item.id === "ball");
 
   assert.ok(next.vx < 0);
+});
+
+test("nearby objects snap to the exact surface of another hitbox", () => {
+  const platform = createSandboxItem("platform", "platform", 50, 60);
+  const block = createSandboxItem("block", "block", 50, 52);
+  const snap = findSnapPlacement(block, [platform]);
+  const placed = { ...block, x: snap.x, y: snap.y };
+
+  assert.equal(snap.targetId, "platform");
+  assert.equal(snap.persistent, false);
+  assert.ok(Math.abs(snap.normal.y + 1) < 1e-9);
+  assert.equal(collisionManifold(placed, platform), null);
+});
+
+test("fixed structures receive persistent snaps while dynamic bodies remain temporary", () => {
+  const platform = createSandboxItem("platform", "platform", 50, 60);
+  const pivot = createSandboxItem("pivot", "pivot", 50, 56);
+  const ball = createSandboxItem("ball", "ball", 50, 52);
+
+  assert.equal(findSnapPlacement(pivot, [platform]).persistent, true);
+  assert.equal(findSnapPlacement(ball, [platform]).persistent, false);
+});
+
+test("persistent attachments follow their target during simulation", () => {
+  const block = createSandboxItem("block", "block", 30, 30);
+  block.vx = 2;
+  block.vy = 0;
+  const pivot = createSandboxItem("pivot", "pivot", 30, 22);
+  pivot.snapTargetId = "block";
+  pivot.snapOffsetX = 0;
+  pivot.snapOffsetY = -8;
+  const next = stepSandbox([block, pivot], [], 0.04);
+  const nextBlock = next.find((item) => item.id === "block");
+  const nextPivot = next.find((item) => item.id === "pivot");
+
+  assert.equal(nextPivot.x, nextBlock.x);
+  assert.equal(nextPivot.y, nextBlock.y - 8);
+});
+
+test("compound and field objects expose their own hitbox geometry", () => {
+  const pendulum = createSandboxItem("pendulum", "pendulum", 40, 20);
+  const track = createSandboxItem("circular-track", "track", 50, 50);
+  const region = createSandboxItem("gravity-region", "region", 50, 50);
+
+  assert.deepEqual(getItemHitboxes(pendulum).map((shape) => shape.part), ["bob", "arm", "pivot"]);
+  assert.equal(getItemHitbox(track).kind, "ring");
+  assert.equal(getItemHitbox(region).part, "field");
 });
 
 test("stretched springs accelerate connected objects toward each other", () => {

@@ -19,7 +19,7 @@ export const SANDBOX_TOOLS = [
 ];
 
 const DYNAMIC_TYPES = new Set(["block", "ball", "cart", "rod", "wheel"]);
-const STATIC_COLLIDER_TYPES = new Set(["platform", "incline", "collision-target", "pulley"]);
+const STATIC_COLLIDER_TYPES = new Set(["platform", "incline", "collision-target", "pulley", "pivot", "pendulum"]);
 const TAU = Math.PI * 2;
 
 const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
@@ -78,6 +78,11 @@ export function createSandboxItem(type, id, x = 50, y = 35) {
     gravityStrength: 9.81,
     gravityDirection: 90,
     fixed: !DYNAMIC_TYPES.has(type),
+    snapTargetId: null,
+    snapOffsetX: 0,
+    snapOffsetY: 0,
+    snapNormalX: 0,
+    snapNormalY: -1,
   };
 
   if (type === "ball") return { ...base, mass: 1, size: 1, vx: 3, vy: -4, initialVx: 3, initialVy: -4, restitution: 0.72 };
@@ -105,31 +110,64 @@ export function createStarterSandbox() {
   ];
 }
 
-export function getItemHitbox(item) {
-  const circle = (radius) => ({
+export function getItemHitboxes(item) {
+  const circle = (radius, x = item.x, y = item.y, part = "body") => ({
     kind: "circle",
-    x: item.x,
-    y: item.y,
+    x,
+    y,
     radius: Math.max(radius, 0.35),
+    part,
   });
-  const box = (halfWidth, halfHeight, angle = item.angle) => ({
+  const box = (halfWidth, halfHeight, angle = item.angle, x = item.x, y = item.y, part = "body") => ({
     kind: "box",
-    x: item.x,
-    y: item.y,
+    x,
+    y,
     halfWidth: Math.max(halfWidth, 0.35),
     halfHeight: Math.max(halfHeight, 0.35),
     angle: radians(angle),
+    part,
   });
 
-  if (item.type === "ball") return circle((item.size * WORLD_SCALE) / 2);
-  if (item.type === "wheel" || item.type === "pulley") return circle(item.radius * WORLD_SCALE);
-  if (item.type === "collision-target") return circle((item.size * WORLD_SCALE) / 2);
-  if (item.type === "pivot") return circle((item.size * WORLD_SCALE) / 2);
-  if (item.type === "cart") return box((item.size * WORLD_SCALE) / 2, item.size * WORLD_SCALE * 0.31, 0);
-  if (item.type === "rod") return box((item.size * WORLD_SCALE) / 2, WORLD_SCALE * 0.18);
-  if (item.type === "platform") return box((item.size * WORLD_SCALE) / 2, WORLD_SCALE * 0.18);
-  if (item.type === "incline") return box((item.size * WORLD_SCALE) / 2, WORLD_SCALE * 0.18, -item.angle);
-  return box((item.size * WORLD_SCALE) / 2, (item.size * WORLD_SCALE) / 2);
+  if (item.type === "ball") return [circle((item.size * WORLD_SCALE) / 2)];
+  if (item.type === "wheel" || item.type === "pulley") return [circle(item.radius * WORLD_SCALE)];
+  if (item.type === "collision-target") return [circle((item.size * WORLD_SCALE) / 2)];
+  if (item.type === "pivot") return [circle(Math.max(item.size * WORLD_SCALE * 0.45, 1.8))];
+  if (item.type === "cart") return [box((item.size * WORLD_SCALE) / 2, item.size * WORLD_SCALE * 0.31, 0)];
+  if (item.type === "rod") return [box((item.size * WORLD_SCALE) / 2, WORLD_SCALE * 0.18)];
+  if (item.type === "platform") return [box((item.size * WORLD_SCALE) / 2, WORLD_SCALE * 0.18)];
+  if (item.type === "incline") return [box((item.size * WORLD_SCALE) / 2, WORLD_SCALE * 0.18, -item.angle)];
+  if (item.type === "circular-track") {
+    return [{
+      kind: "ring",
+      x: item.x,
+      y: item.y,
+      radius: Math.max(item.radius * WORLD_SCALE, 2),
+      thickness: WORLD_SCALE * 0.42,
+      part: "track",
+    }];
+  }
+  if (item.type === "gravity-region") {
+    const half = item.size * 4.2;
+    return [box(half, half, 0, item.x, item.y, "field")];
+  }
+  if (item.type === "pendulum") {
+    const theta = radians(item.angle);
+    const armLength = Math.max(item.length * WORLD_SCALE, 2);
+    const dx = -Math.sin(theta) * armLength;
+    const dy = Math.cos(theta) * armLength;
+    const bobX = item.x + dx;
+    const bobY = item.y + dy;
+    return [
+      circle((item.size * WORLD_SCALE) / 2, bobX, bobY, "bob"),
+      box(armLength / 2, WORLD_SCALE * 0.11, (Math.atan2(dy, dx) * 180) / Math.PI, item.x + dx / 2, item.y + dy / 2, "arm"),
+      circle(WORLD_SCALE * 0.28, item.x, item.y, "pivot"),
+    ];
+  }
+  return [box((item.size * WORLD_SCALE) / 2, (item.size * WORLD_SCALE) / 2)];
+}
+
+export function getItemHitbox(item) {
+  return getItemHitboxes(item)[0];
 }
 
 function boxAxes(box) {
@@ -204,6 +242,7 @@ function boxBoxManifold(a, b) {
 export function collisionManifold(first, second) {
   const a = first.kind ? first : getItemHitbox(first);
   const b = second.kind ? second : getItemHitbox(second);
+  if (a.kind === "ring" || b.kind === "ring") return null;
   if (a.kind === "circle" && b.kind === "circle") return circleCircleManifold(a, b);
   if (a.kind === "circle" && b.kind === "box") return circleBoxManifold(a, b);
   if (a.kind === "box" && b.kind === "circle") {
@@ -217,7 +256,125 @@ export function collisionManifold(first, second) {
 
 function shapeExtent(item, axis) {
   const shape = getItemHitbox(item);
-  return shape.kind === "circle" ? shape.radius : projectionRadius(shape, axis);
+  if (shape.kind === "circle") return shape.radius;
+  if (shape.kind === "ring") return shape.radius + shape.thickness / 2;
+  return projectionRadius(shape, axis);
+}
+
+function shapeSupport(shape, axis) {
+  if (shape.kind === "circle") return shape.radius;
+  if (shape.kind === "ring") return shape.radius + shape.thickness / 2;
+  return projectionRadius(shape, axis);
+}
+
+function snapToCircle(item, draggedShape, targetShape) {
+  const normal = normalize({ x: draggedShape.x - targetShape.x, y: draggedShape.y - targetShape.y });
+  const support = shapeSupport(draggedShape, normal);
+  const desiredShape = {
+    x: targetShape.x + normal.x * (targetShape.radius + support),
+    y: targetShape.y + normal.y * (targetShape.radius + support),
+  };
+  const shift = { x: desiredShape.x - draggedShape.x, y: desiredShape.y - draggedShape.y };
+  return {
+    x: item.x + shift.x,
+    y: item.y + shift.y,
+    normal,
+    distance: Math.hypot(shift.x, shift.y),
+    part: targetShape.part,
+  };
+}
+
+function snapToRing(item, draggedShape, targetShape) {
+  const normal = normalize({ x: draggedShape.x - targetShape.x, y: draggedShape.y - targetShape.y });
+  const centerDistance = Math.hypot(draggedShape.x - targetShape.x, draggedShape.y - targetShape.y);
+  const support = shapeSupport(draggedShape, normal);
+  const insideRadius = Math.max(0.5, targetShape.radius - targetShape.thickness / 2 - support);
+  const outsideRadius = targetShape.radius + targetShape.thickness / 2 + support;
+  const snappedRadius = Math.abs(centerDistance - insideRadius) <= Math.abs(centerDistance - outsideRadius)
+    ? insideRadius
+    : outsideRadius;
+  const desiredShape = {
+    x: targetShape.x + normal.x * snappedRadius,
+    y: targetShape.y + normal.y * snappedRadius,
+  };
+  const shift = { x: desiredShape.x - draggedShape.x, y: desiredShape.y - draggedShape.y };
+  return {
+    x: item.x + shift.x,
+    y: item.y + shift.y,
+    normal: snappedRadius === insideRadius ? { x: -normal.x, y: -normal.y } : normal,
+    distance: Math.hypot(shift.x, shift.y),
+    part: targetShape.part,
+  };
+}
+
+function snapToBox(item, draggedShape, targetShape) {
+  const relative = rotate({ x: draggedShape.x - targetShape.x, y: draggedShape.y - targetShape.y }, -targetShape.angle);
+  const inside =
+    Math.abs(relative.x) <= targetShape.halfWidth &&
+    Math.abs(relative.y) <= targetShape.halfHeight;
+  let localSurface;
+  let localNormal;
+
+  if (inside) {
+    const gapX = targetShape.halfWidth - Math.abs(relative.x);
+    const gapY = targetShape.halfHeight - Math.abs(relative.y);
+    if (gapX < gapY) {
+      localNormal = { x: relative.x >= 0 ? 1 : -1, y: 0 };
+      localSurface = { x: localNormal.x * targetShape.halfWidth, y: relative.y };
+    } else {
+      localNormal = { x: 0, y: relative.y >= 0 ? 1 : -1 };
+      localSurface = { x: relative.x, y: localNormal.y * targetShape.halfHeight };
+    }
+  } else {
+    localSurface = {
+      x: clamp(relative.x, -targetShape.halfWidth, targetShape.halfWidth),
+      y: clamp(relative.y, -targetShape.halfHeight, targetShape.halfHeight),
+    };
+    localNormal = normalize({ x: relative.x - localSurface.x, y: relative.y - localSurface.y });
+  }
+
+  const normal = rotate(localNormal, targetShape.angle);
+  const surfaceOffset = rotate(localSurface, targetShape.angle);
+  const support = shapeSupport(draggedShape, normal);
+  const desiredShape = {
+    x: targetShape.x + surfaceOffset.x + normal.x * support,
+    y: targetShape.y + surfaceOffset.y + normal.y * support,
+  };
+  const shift = { x: desiredShape.x - draggedShape.x, y: desiredShape.y - draggedShape.y };
+  return {
+    x: item.x + shift.x,
+    y: item.y + shift.y,
+    normal,
+    distance: Math.hypot(shift.x, shift.y),
+    part: targetShape.part,
+  };
+}
+
+export function findSnapPlacement(item, items, threshold = 4.2) {
+  const draggedShape = getItemHitbox(item);
+  let best = null;
+  for (const target of items) {
+    if (target.id === item.id || target.type === "gravity-region") continue;
+    for (const targetShape of getItemHitboxes(target)) {
+      const candidate = targetShape.kind === "circle"
+        ? snapToCircle(item, draggedShape, targetShape)
+        : targetShape.kind === "ring"
+          ? snapToRing(item, draggedShape, targetShape)
+          : snapToBox(item, draggedShape, targetShape);
+      if (candidate.distance > threshold) continue;
+      const score = candidate.distance + (isDynamicItem(target) ? 0.35 : 0);
+      if (!best || score < best.score) {
+        best = {
+          ...candidate,
+          score,
+          targetId: target.id,
+          targetLabel: target.label,
+          persistent: !isDynamicItem(item),
+        };
+      }
+    }
+  }
+  return best;
 }
 
 function gravityFor(item, items) {
@@ -232,7 +389,15 @@ function gravityFor(item, items) {
 }
 
 function resolveStaticCollision(item, surface) {
-  const manifold = collisionManifold(item, surface);
+  let manifold = null;
+  for (const itemShape of getItemHitboxes(item)) {
+    for (const surfaceShape of getItemHitboxes(surface)) {
+      const candidate = collisionManifold(itemShape, surfaceShape);
+      if (candidate && (!manifold || candidate.penetration > manifold.penetration)) {
+        manifold = candidate;
+      }
+    }
+  }
   if (!manifold) return;
   const { normal, penetration } = manifold;
   item.x -= normal.x * penetration;
@@ -271,10 +436,11 @@ function collideWithCircularTrack(item, track) {
 
 function attachmentPoint(item, target) {
   const shape = getItemHitbox(item);
-  const direction = { x: target.x - item.x, y: target.y - item.y };
+  const direction = { x: target.x - shape.x, y: target.y - shape.y };
   const unit = normalize(direction);
-  if (shape.kind === "circle") {
-    return { x: item.x + unit.x * shape.radius, y: item.y + unit.y * shape.radius };
+  if (shape.kind === "circle" || shape.kind === "ring") {
+    const radius = shape.kind === "ring" ? shape.radius + shape.thickness / 2 : shape.radius;
+    return { x: shape.x + unit.x * radius, y: shape.y + unit.y * radius };
   }
 
   const localDirection = rotate(direction, -shape.angle);
@@ -282,7 +448,7 @@ function attachmentPoint(item, target) {
   const scaleY = Math.abs(localDirection.y) > 0.000001 ? shape.halfHeight / Math.abs(localDirection.y) : Infinity;
   const localPoint = { x: localDirection.x * Math.min(scaleX, scaleY), y: localDirection.y * Math.min(scaleX, scaleY) };
   const worldPoint = rotate(localPoint, shape.angle);
-  return { x: item.x + worldPoint.x, y: item.y + worldPoint.y };
+  return { x: shape.x + worldPoint.x, y: shape.y + worldPoint.y };
 }
 
 function tangentPoints(point, center, radius) {
@@ -562,6 +728,7 @@ function resolveEnvironment(item, items) {
   keepInsideStage(item);
   for (const surface of items) {
     if (surface.id === item.id) continue;
+    if (surface.snapTargetId === item.id || item.snapTargetId === surface.id) continue;
     if (surface.type === "circular-track") collideWithCircularTrack(item, surface);
     if (!STATIC_COLLIDER_TYPES.has(surface.type)) continue;
     if (surface.type === "pulley" && !surface.fixed) continue;
@@ -569,9 +736,26 @@ function resolveEnvironment(item, items) {
   }
 }
 
+function syncSnapAttachments(items) {
+  const byId = new Map(items.map((item) => [item.id, item]));
+  for (let pass = 0; pass < items.length; pass += 1) {
+    for (const item of items) {
+      if (!item.snapTargetId || isDynamicItem(item)) continue;
+      const target = byId.get(item.snapTargetId);
+      if (!target) {
+        item.snapTargetId = null;
+        continue;
+      }
+      item.x = target.x + (item.snapOffsetX ?? 0);
+      item.y = target.y + (item.snapOffsetY ?? 0);
+    }
+  }
+}
+
 export function stepSandbox(items, links, deltaSeconds) {
   const delta = Math.min(Math.max(deltaSeconds, 0), 0.04);
   const next = items.map((item) => ({ ...item }));
+  syncSnapAttachments(next);
   applySpringForces(next, links, delta);
 
   for (const item of next) {
@@ -602,11 +786,12 @@ export function stepSandbox(items, links, deltaSeconds) {
   solveBodyCollisions(next);
   solveRopes(next, links);
   for (const item of next.filter(isDynamicItem)) resolveEnvironment(item, next);
+  syncSnapAttachments(next);
   return next;
 }
 
 export function resetSandbox(items) {
-  return items.map((item) => ({
+  const next = items.map((item) => ({
     ...item,
     x: item.initialX,
     y: item.initialY,
@@ -615,4 +800,6 @@ export function resetSandbox(items) {
     angle: item.initialAngle,
     angularVelocity: 0,
   }));
+  syncSnapAttachments(next);
+  return next;
 }

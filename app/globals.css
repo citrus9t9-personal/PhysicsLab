@@ -2251,6 +2251,16 @@ h1 em {
   outline-offset: 6px;
 }
 
+.sandbox-entity.snapping .sandbox-shape {
+  outline: 4px solid var(--green);
+  outline-offset: 7px;
+}
+
+.sandbox-entity.attached:not(.selected) .sandbox-shape {
+  outline: 2px solid var(--green);
+  outline-offset: 4px;
+}
+
 .sandbox-shape {
   position: absolute;
   inset: 0;
@@ -2273,10 +2283,11 @@ h1 em {
 .show-hitboxes .entity-ball .sandbox-hitbox,
 .show-hitboxes .entity-wheel .sandbox-hitbox,
 .show-hitboxes .entity-pulley .sandbox-hitbox,
-.show-hitboxes .entity-collision-target .sandbox-hitbox { border-radius: 50%; }
+.show-hitboxes .entity-collision-target .sandbox-hitbox,
+.show-hitboxes .entity-pivot .sandbox-hitbox,
+.show-hitboxes .entity-circular-track .sandbox-hitbox { border-radius: 50%; }
 
-.show-hitboxes .sandbox-hitbox::after {
-  content: "hitbox";
+.sandbox-hitbox > i {
   position: absolute;
   left: 50%;
   top: -17px;
@@ -2286,9 +2297,38 @@ h1 em {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 0.42rem;
   font-weight: 850;
+  font-style: normal;
   letter-spacing: 0.05em;
   text-transform: uppercase;
   transform: translateX(-50%) rotate(var(--counter-entity-angle));
+}
+
+.entity-pendulum .sandbox-hitbox {
+  border: 0;
+  overflow: visible;
+}
+
+.pendulum-hitbox-arm {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  width: 7px;
+  margin-left: -3px;
+  border: 2px dashed var(--blue);
+  transform: rotate(var(--pendulum-angle));
+  transform-origin: top center;
+}
+
+.pendulum-hitbox-arm em {
+  position: absolute;
+  left: 50%;
+  bottom: -22px;
+  width: 44px;
+  height: 44px;
+  margin-left: -22px;
+  border: 2px dashed var(--blue);
+  border-radius: 50%;
+  background: transparent;
 }
 
 .sandbox-entity > small {
@@ -2518,6 +2558,57 @@ h1 em {
   stroke-width: 0.68;
 }
 
+.sandbox-rope-markers {
+  position: absolute;
+  z-index: 13;
+  inset: 0;
+  pointer-events: none;
+}
+
+.rope-marker {
+  position: absolute;
+  width: 22px;
+  height: 22px;
+  border: 2px solid var(--ink);
+  border-radius: 50%;
+  background: var(--surface);
+  color: var(--ink);
+  display: grid;
+  place-items: center;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.48rem;
+  font-weight: 900;
+  transform: translate(-50%, -50%);
+}
+
+.marker-start { background: var(--green-soft); color: var(--green); }
+.marker-end { background: var(--orange-soft); color: var(--orange); }
+.marker-pulley { width: 25px; height: 25px; background: #dbe9f8; color: var(--blue); }
+.sandbox-rope-markers:not(.selected) .rope-marker { opacity: 0.72; transform: translate(-50%, -50%) scale(0.86); }
+
+.sandbox-snap-badge,
+.sandbox-attachment-badge {
+  position: absolute;
+  z-index: 24;
+  left: 50%;
+  min-width: max-content;
+  padding: 4px 6px;
+  border: 1px solid var(--ink);
+  background: var(--green);
+  color: white;
+  box-shadow: 2px 2px 0 var(--ink);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.46rem;
+  font-weight: 850;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  transform: translateX(-50%) rotate(var(--counter-entity-angle));
+  pointer-events: none;
+}
+
+.sandbox-snap-badge { top: -38px; }
+.sandbox-attachment-badge { top: calc(100% + 31px); background: var(--surface); color: var(--green); }
+
 .sandbox-link {
   position: absolute;
   z-index: 6;
@@ -2710,6 +2801,33 @@ h1 em {
   font-weight: 750;
 }
 
+.sandbox-snap-status {
+  margin-bottom: 9px;
+  padding: 9px;
+  border: 1px solid var(--green);
+  background: var(--green-soft);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.sandbox-snap-status span { min-width: 0; display: grid; gap: 2px; }
+.sandbox-snap-status small { color: var(--muted); font-size: 0.47rem; font-weight: 750; text-transform: uppercase; }
+.sandbox-snap-status strong { font-size: 0.58rem; letter-spacing: 0.025em; text-transform: uppercase; }
+
+.sandbox-snap-status button {
+  min-height: 31px;
+  padding: 0 8px;
+  border: 1px solid var(--ink);
+  background: var(--surface);
+  color: var(--ink);
+  cursor: pointer;
+  font-size: 0.5rem;
+  font-weight: 850;
+  text-transform: uppercase;
+}
+
 .sandbox-route-summary {
   margin-bottom: 9px;
   padding: 9px;
@@ -2851,6 +2969,7 @@ footer p {
   }
 
   .sandbox-selection-name,
+  .sandbox-snap-status,
   .sandbox-route-summary,
   .sandbox-route-actions,
   .sandbox-delete {

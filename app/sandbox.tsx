@@ -15,6 +15,7 @@ import {
   WORLD_SCALE,
   createSandboxItem,
   createStarterSandbox,
+  findSnapPlacement,
   getRopeRoute,
   isDynamicItem,
   resetSandbox,
@@ -48,6 +49,11 @@ interface SandboxItem {
   gravityStrength: number;
   gravityDirection: number;
   fixed: boolean;
+  snapTargetId: string | null;
+  snapOffsetX: number;
+  snapOffsetY: number;
+  snapNormalX: number;
+  snapNormalY: number;
 }
 
 interface SandboxLink {
@@ -58,6 +64,14 @@ interface SandboxLink {
   naturalLength: number;
   springConstant: number;
   pulleys: Array<{ id: string; direction: number }>;
+}
+
+interface SnapGuide {
+  itemId: string;
+  targetId: string;
+  targetLabel: string;
+  persistent: boolean;
+  part: string;
 }
 
 const ICONS: Record<string, string> = {
@@ -150,6 +164,22 @@ function ropePath(points: Array<{ x: number; y: number }>) {
   return points.map((point, index) => `${index === 0 ? "M" : "L"} ${point.x.toFixed(3)} ${point.y.toFixed(3)}`).join(" ");
 }
 
+function attachedDescendants(items: SandboxItem[], rootId: string) {
+  const descendants = new Set<string>();
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const item of items) {
+      if (!item.snapTargetId || descendants.has(item.id)) continue;
+      if (item.snapTargetId === rootId || descendants.has(item.snapTargetId)) {
+        descendants.add(item.id);
+        changed = true;
+      }
+    }
+  }
+  return descendants;
+}
+
 export default function SandboxLab() {
   const [items, setItems] = useState<SandboxItem[]>(() => createStarterSandbox());
   const [links, setLinks] = useState<SandboxLink[]>([]);
@@ -160,17 +190,30 @@ export default function SandboxLab() {
   const [linkPulleyIds, setLinkPulleyIds] = useState<string[]>([]);
   const [pulleyLinkId, setPulleyLinkId] = useState<string | null>(null);
   const [showHitboxes, setShowHitboxes] = useState(false);
+  const [snapGuide, setSnapGuide] = useState<SnapGuide | null>(null);
   const [running, setRunning] = useState(false);
   const [playbackSpeed, setPlaybackSpeed] = useState(1);
   const stageRef = useRef<HTMLDivElement>(null);
   const counterRef = useRef(1);
   const lastFrameRef = useRef<number | null>(null);
-  const dragRef = useRef<{ id: string; offsetX: number; offsetY: number } | null>(null);
+  const dragRef = useRef<{ id: string; offsetX: number; offsetY: number; moved: boolean } | null>(null);
   const connectorClickRef = useRef<string | null>(null);
+  const itemsRef = useRef(items);
+  const snapGuideRef = useRef<SnapGuide | null>(null);
+  itemsRef.current = items;
+  snapGuideRef.current = snapGuide;
 
   const selectedItem = items.find((item) => item.id === selectedItemId) ?? null;
   const selectedLink = links.find((link) => link.id === selectedLinkId) ?? null;
   const itemsById = useMemo(() => new Map(items.map((item) => [item.id, item])), [items]);
+  const ropeRoutes = useMemo(() => links
+    .filter((link) => link.type === "rope")
+    .map((link) => ({
+      link,
+      route: getRopeRoute(items, link),
+      a: items.find((item) => item.id === link.a),
+      b: items.find((item) => item.id === link.b),
+    })), [items, links]);
 
   useEffect(() => {
     if (!running) {
@@ -206,7 +249,21 @@ export default function SandboxLab() {
     }
     const index = counterRef.current;
     counterRef.current += 1;
-    const next = createSandboxItem(type, `sandbox-${type}-${index}`, x ?? 42 + (index % 4) * 5, y ?? 28 + (index % 3) * 7) as SandboxItem;
+    const raw = createSandboxItem(type, `sandbox-${type}-${index}`, x ?? 42 + (index % 4) * 5, y ?? 28 + (index % 3) * 7) as SandboxItem;
+    const snap = findSnapPlacement(raw, itemsRef.current);
+    const persistent = Boolean(snap && !isDynamicItem(raw));
+    const next = snap ? {
+      ...raw,
+      x: snap.x,
+      y: snap.y,
+      initialX: snap.x,
+      initialY: snap.y,
+      snapTargetId: persistent ? snap.targetId : null,
+      snapOffsetX: persistent ? snap.x - (itemsRef.current.find((item) => item.id === snap.targetId)?.x ?? snap.x) : 0,
+      snapOffsetY: persistent ? snap.y - (itemsRef.current.find((item) => item.id === snap.targetId)?.y ?? snap.y) : 0,
+      snapNormalX: persistent ? snap.normal.x : 0,
+      snapNormalY: persistent ? snap.normal.y : -1,
+    } : raw;
     setItems((current) => [...current, next]);
     selectItem(next.id);
     setRunning(false);
@@ -242,13 +299,22 @@ export default function SandboxLab() {
       if (key === "vx") next.initialVx = Number(value);
       if (key === "vy") next.initialVy = Number(value);
       if (key === "angle") next.initialAngle = Number(value);
+      if (key === "fixed" && value === false) {
+        next.snapTargetId = null;
+        next.snapOffsetX = 0;
+        next.snapOffsetY = 0;
+      }
       return next;
     }));
   };
 
   const removeSelected = () => {
     if (selectedItemId) {
-      setItems((current) => current.filter((item) => item.id !== selectedItemId));
+      setItems((current) => current
+        .filter((item) => item.id !== selectedItemId)
+        .map((item) => item.snapTargetId === selectedItemId
+          ? { ...item, snapTargetId: null, snapOffsetX: 0, snapOffsetY: 0 }
+          : item));
       setLinks((current) => current
         .filter((link) => link.a !== selectedItemId && link.b !== selectedItemId)
         .map((link) => ({ ...link, pulleys: link.pulleys.filter((pulley) => pulley.id !== selectedItemId) })));
@@ -258,6 +324,7 @@ export default function SandboxLab() {
       setLinks((current) => current.filter((link) => link.id !== selectedLinkId));
       setSelectedLinkId(null);
     }
+    setSnapGuide(null);
     setPulleyLinkId(null);
     setRunning(false);
   };
@@ -380,9 +447,10 @@ export default function SandboxLab() {
     }
     if ((event.target as HTMLElement).closest(".sandbox-link-port")) return;
     setRunning(false);
+    setSnapGuide(null);
     selectItem(item.id);
     const point = stageCoordinates(event.clientX, event.clientY);
-    dragRef.current = { id: item.id, offsetX: point.x - item.x, offsetY: point.y - item.y };
+    dragRef.current = { id: item.id, offsetX: point.x - item.x, offsetY: point.y - item.y, moved: false };
     event.currentTarget.setPointerCapture(event.pointerId);
   };
 
@@ -390,22 +458,88 @@ export default function SandboxLab() {
     const drag = dragRef.current;
     if (!drag) return;
     const point = stageCoordinates(event.clientX, event.clientY);
-    setItems((current) => current.map((item) => item.id === drag.id
-      ? { ...item, x: clamp(point.x - drag.offsetX, 2, 98), y: clamp(point.y - drag.offsetY, 2, 94) }
-      : item));
+    const current = itemsRef.current;
+    const dragged = current.find((item) => item.id === drag.id);
+    if (!dragged) return;
+    const rawX = clamp(point.x - drag.offsetX, 2, 98);
+    const rawY = clamp(point.y - drag.offsetY, 2, 94);
+    if (Math.hypot(rawX - dragged.x, rawY - dragged.y) < 0.01) return;
+    drag.moved = true;
+
+    const descendants = attachedDescendants(current, drag.id);
+    const provisional = {
+      ...dragged,
+      x: rawX,
+      y: rawY,
+      snapTargetId: null,
+      snapOffsetX: 0,
+      snapOffsetY: 0,
+    };
+    const snap = findSnapPlacement(
+      provisional,
+      current.filter((item) => item.id !== drag.id && !descendants.has(item.id)),
+    );
+    const persistent = Boolean(snap && !isDynamicItem(dragged));
+    const target = snap ? current.find((item) => item.id === snap.targetId) : null;
+    const placed = snap ? {
+      ...provisional,
+      x: clamp(snap.x, 2, 98),
+      y: clamp(snap.y, 2, 94),
+      snapTargetId: persistent ? snap.targetId : null,
+      snapOffsetX: persistent ? snap.x - (target?.x ?? snap.x) : 0,
+      snapOffsetY: persistent ? snap.y - (target?.y ?? snap.y) : 0,
+      snapNormalX: persistent ? snap.normal.x : 0,
+      snapNormalY: persistent ? snap.normal.y : -1,
+    } : provisional;
+    const dx = placed.x - dragged.x;
+    const dy = placed.y - dragged.y;
+    const next = current.map((item) => {
+      if (item.id === drag.id) return placed;
+      if (descendants.has(item.id)) return { ...item, x: item.x + dx, y: item.y + dy };
+      return item;
+    });
+    const guide = snap ? {
+      itemId: drag.id,
+      targetId: snap.targetId,
+      targetLabel: snap.targetLabel,
+      persistent,
+      part: snap.part,
+    } : null;
+    itemsRef.current = next;
+    snapGuideRef.current = guide;
+    setItems(next);
+    setSnapGuide(guide);
   };
 
   const endItemDrag = () => {
     const drag = dragRef.current;
     if (!drag) return;
-    setItems((current) => current.map((item) => item.id === drag.id
-      ? { ...item, initialX: item.x, initialY: item.y }
-      : item));
+    const current = itemsRef.current;
+    const descendants = attachedDescendants(current, drag.id);
+    const next = current.map((item) => {
+      if (item.id !== drag.id && !descendants.has(item.id)) return item;
+      if (item.id !== drag.id) return { ...item, initialX: item.x, initialY: item.y };
+      if (!drag.moved) return item;
+      const temporary = isDynamicItem(item);
+      return {
+        ...item,
+        initialX: item.x,
+        initialY: item.y,
+        snapTargetId: temporary ? null : item.snapTargetId,
+        snapOffsetX: temporary ? 0 : item.snapOffsetX,
+        snapOffsetY: temporary ? 0 : item.snapOffsetY,
+      };
+    });
+    itemsRef.current = next;
+    setItems(next);
+    snapGuideRef.current = null;
+    setSnapGuide(null);
     dragRef.current = null;
   };
 
   const reset = () => {
     setItems((current) => resetSandbox(current));
+    setSnapGuide(null);
     setRunning(false);
   };
 
@@ -418,6 +552,7 @@ export default function SandboxLab() {
     setLinkStartId(null);
     setLinkPulleyIds([]);
     setPulleyLinkId(null);
+    setSnapGuide(null);
     setRunning(false);
   };
 
@@ -430,6 +565,7 @@ export default function SandboxLab() {
     setLinkStartId(null);
     setLinkPulleyIds([]);
     setPulleyLinkId(null);
+    setSnapGuide(null);
     setRunning(false);
   };
 
@@ -476,6 +612,7 @@ export default function SandboxLab() {
             <div className="sandbox-toolbar-meta">
               <span>{dynamicCount} moving</span>
               <span>{links.length} connected</span>
+              <span>snap on</span>
               <label className="sandbox-hitbox-toggle"><input type="checkbox" checked={showHitboxes} onChange={(event) => setShowHitboxes(event.target.checked)} /> Hitboxes</label>
               <label>Speed <select value={playbackSpeed} onChange={(event) => setPlaybackSpeed(Number(event.target.value))}><option value={0.5}>0.5×</option><option value={1}>1×</option><option value={2}>2×</option></select></label>
             </div>
@@ -492,10 +629,7 @@ export default function SandboxLab() {
             <div className="sandbox-grid" />
             <div className="sandbox-floor"><span>floor</span></div>
             <svg className="sandbox-rope-layer" viewBox="0 0 100 100" preserveAspectRatio="none" aria-label="Rope connections">
-              {links.filter((link) => link.type === "rope").map((link) => {
-                const a = itemsById.get(link.a);
-                const b = itemsById.get(link.b);
-                const route = getRopeRoute(items, link);
+              {ropeRoutes.map(({ link, route, a, b }) => {
                 if (!a || !b || route.points.length < 2) return null;
                 const path = ropePath(route.points);
                 const select = () => { setSelectedLinkId(link.id); setSelectedItemId(null); setPulleyLinkId(null); };
@@ -515,6 +649,21 @@ export default function SandboxLab() {
                 );
               })}
             </svg>
+            {ropeRoutes.map(({ link, route, a, b }) => {
+              if (!a || !b || route.points.length < 2) return null;
+              const start = route.points[0];
+              const end = route.points.at(-1);
+              return (
+                <div key={`${link.id}-markers`} className={`sandbox-rope-markers ${selectedLinkId === link.id ? "selected" : ""}`} aria-hidden="true">
+                  <span className="rope-marker marker-start" style={{ left: `${start.x}%`, top: `${start.y}%` }}>S</span>
+                  {route.wraps.map((wrap: { id: string }, index: number) => {
+                    const pulley = itemsById.get(wrap.id);
+                    return pulley ? <span key={`${wrap.id}-${index}`} className="rope-marker marker-pulley" style={{ left: `${pulley.x}%`, top: `${pulley.y}%` }}>P{index + 1}</span> : null;
+                  })}
+                  {end && <span className="rope-marker marker-end" style={{ left: `${end.x}%`, top: `${end.y}%` }}>E</span>}
+                </div>
+              );
+            })}
             {links.filter((link) => link.type === "spring").map((link) => {
               const a = itemsById.get(link.a);
               const b = itemsById.get(link.b);
@@ -525,14 +674,16 @@ export default function SandboxLab() {
               const dimensions = entityDimensions(item);
               const speed = Math.hypot(item.vx, item.vy);
               const visualAngle = item.type === "pendulum" ? 0 : item.type === "incline" ? -item.angle : item.angle;
+              const activeSnap = snapGuide?.itemId === item.id ? snapGuide : null;
+              const snapTarget = item.snapTargetId ? itemsById.get(item.snapTargetId) : null;
               return (
                 <div
                   key={item.id}
-                  className={`sandbox-entity entity-${item.type} ${selectedItemId === item.id ? "selected" : ""} ${linkStartId === item.id ? "link-start" : ""} ${pulleyLinkId && item.type === "pulley" ? "pulley-target" : ""}`}
+                  className={`sandbox-entity entity-${item.type} ${selectedItemId === item.id ? "selected" : ""} ${linkStartId === item.id ? "link-start" : ""} ${pulleyLinkId && item.type === "pulley" ? "pulley-target" : ""} ${activeSnap ? "snapping" : ""} ${snapTarget ? "attached" : ""}`}
                   style={{ left: `${item.x}%`, top: `${item.y}%`, width: `${dimensions.width}px`, height: `${dimensions.height}px`, transform: itemTransform(item), "--entity-angle": `${visualAngle}deg`, "--counter-entity-angle": `${-visualAngle}deg`, "--pendulum-angle": `${item.angle}deg` } as CSSProperties}
                   role="button"
                   tabIndex={0}
-                  aria-label={`${item.label} at ${item.x.toFixed(0)}, ${item.y.toFixed(0)}`}
+                  aria-label={`${item.label} at ${item.x.toFixed(0)}, ${item.y.toFixed(0)}${snapTarget ? ` attached to ${snapTarget.label}` : ""}`}
                   onClick={() => {
                     if (connectorClickRef.current === item.id) {
                       connectorClickRef.current = null;
@@ -562,7 +713,7 @@ export default function SandboxLab() {
                     {item.type === "gravity-region" && <b style={{ transform: `rotate(${item.gravityDirection - 90}deg)` }}>↓</b>}
                     {item.type === "collision-target" && <i />}
                   </span>
-                  {(["block", "ball", "cart", "rod", "wheel", "platform", "incline", "pulley", "collision-target"].includes(item.type)) && <span className="sandbox-hitbox" aria-hidden="true" />}
+                  <span className="sandbox-hitbox" aria-hidden="true"><i>hitbox</i>{item.type === "pendulum" && <b className="pendulum-hitbox-arm" style={{ height: `${clamp(item.length * 35, 72, 190)}px` }}><em /></b>}</span>
                   {isDynamicItem(item) && speed > 0.08 && <span className="sandbox-velocity" style={{ "--velocity-angle": `${Math.atan2(item.vy, item.vx)}rad`, "--velocity-length": `${clamp(speed * 9, 26, 78)}px` } as CSSProperties}><i>{speed.toFixed(1)} m/s</i></span>}
                   {(connectorTool || (pulleyLinkId && item.type === "pulley")) && <button
                     type="button"
@@ -576,6 +727,8 @@ export default function SandboxLab() {
                     }}
                     aria-label={pulleyLinkId ? `Route selected rope around ${item.label}` : `Use ${item.label} for ${connectorTool} connection`}
                   />}
+                  {activeSnap && <span className="sandbox-snap-badge">{activeSnap.persistent ? "STICK" : "TEMP"} → {activeSnap.targetLabel}</span>}
+                  {!activeSnap && snapTarget && <span className="sandbox-attachment-badge">STUCK → {snapTarget.label}</span>}
                   <small>{item.label}</small>
                 </div>
               );
@@ -595,7 +748,7 @@ export default function SandboxLab() {
             {pulleyLinkId && <div className="sandbox-connect-note"><strong>Connect rope to pulley</strong><span>Choose a pulley. The rope will wrap around its rim instead of attaching to its center.</span><button type="button" onClick={() => setPulleyLinkId(null)}>Cancel</button></div>}
           </div>
 
-          <div className="sandbox-stage-actions"><button type="button" onClick={loadStarter}>Load starter setup</button><button type="button" onClick={clear}>Clear canvas</button><span>Drag objects to set their starting positions.</span></div>
+          <div className="sandbox-stage-actions"><button type="button" onClick={loadStarter}>Load starter setup</button><button type="button" onClick={clear}>Clear canvas</button><span>Movable objects snap temporarily · fixed structures stick and slide.</span></div>
         </div>
 
         <aside className="sandbox-inspector" aria-label="Selected item properties">
@@ -603,6 +756,7 @@ export default function SandboxLab() {
           {selectedItem ? (
             <div className="sandbox-properties">
               <div className="sandbox-selection-name"><span aria-hidden="true">{ICONS[selectedItem.type]}</span><div><strong>{selectedItem.label}</strong><small>{isDynamicItem(selectedItem) ? "Dynamic object" : selectedItem.type === "pendulum" ? "Oscillating system" : "Placed structure"}</small></div></div>
+              {selectedItem.snapTargetId && <div className="sandbox-snap-status"><span><small>Persistent snap</small><strong>Stuck to {itemsById.get(selectedItem.snapTargetId)?.label ?? "surface"}</strong></span><button type="button" onClick={() => setItems((current) => current.map((item) => item.id === selectedItem.id ? { ...item, snapTargetId: null, snapOffsetX: 0, snapOffsetY: 0 } : item))}>Detach</button></div>}
               {(["block", "ball", "cart", "rod", "wheel", "pendulum", "pulley"].includes(selectedItem.type)) && <NumberControl label="Mass" value={selectedItem.mass} min={0.2} max={12} step={0.1} unit="kg" onChange={(value) => updateItem(selectedItem.id, "mass", value)} />}
               {!(["pivot"].includes(selectedItem.type)) && <NumberControl label={selectedItem.type === "platform" || selectedItem.type === "incline" || selectedItem.type === "rod" ? "Length" : "Size"} value={selectedItem.size} min={0.5} max={8} step={0.1} unit="m" onChange={(value) => updateItem(selectedItem.id, "size", value)} />}
               {isDynamicItem(selectedItem) && <><NumberControl label="Initial velocity x" value={selectedItem.initialVx} min={-10} max={10} step={0.25} unit="m/s" onChange={(value) => updateItem(selectedItem.id, "vx", value)} />{selectedItem.type !== "cart" && <NumberControl label="Initial velocity y" value={selectedItem.initialVy} min={-10} max={10} step={0.25} unit="m/s" onChange={(value) => updateItem(selectedItem.id, "vy", value)} />}</>}
