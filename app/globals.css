@@ -2180,16 +2180,56 @@ h1 em {
 .sandbox-toolbar-meta select { border: 1px solid var(--line-dark); background: var(--surface); color: var(--ink); }
 .sandbox-hitbox-toggle input { accent-color: var(--orange); }
 
+.sandbox-zoom-controls {
+  min-height: 28px;
+  border: 1px solid var(--line-dark);
+  background: var(--surface);
+  display: inline-grid;
+  grid-template-columns: 28px 48px 28px;
+  align-items: stretch;
+}
+
+.sandbox-zoom-controls button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  cursor: pointer;
+  font-size: 0.9rem;
+  font-weight: 900;
+}
+
+.sandbox-zoom-controls button:hover { background: var(--orange-soft); }
+.sandbox-zoom-controls output {
+  border-inline: 1px solid var(--line);
+  display: grid;
+  place-items: center;
+  color: var(--green);
+  font-size: 0.5rem;
+  font-weight: 900;
+}
+
 .sandbox-stage {
   position: relative;
+  height: 650px;
+  overflow: auto;
+  background: #dfe3de;
+  overscroll-behavior: contain;
+}
+
+.sandbox-world {
+  position: relative;
+  width: 100%;
   height: 650px;
   overflow: hidden;
   touch-action: none;
   background: #f8f7f1;
+  transform: scale(var(--sandbox-zoom, 1));
+  transform-origin: top left;
   user-select: none;
 }
 
-.sandbox-stage.connecting { cursor: crosshair; }
+.sandbox-world.connecting { cursor: crosshair; }
 
 .sandbox-grid {
   position: absolute;
@@ -2198,7 +2238,7 @@ h1 em {
   background-image:
     linear-gradient(rgba(20, 32, 31, 0.09) 1px, transparent 1px),
     linear-gradient(90deg, rgba(20, 32, 31, 0.09) 1px, transparent 1px);
-  background-size: 32px 32px;
+  background-size: 5% 5%;
 }
 
 .sandbox-floor {
@@ -2206,8 +2246,8 @@ h1 em {
   z-index: 2;
   left: 0;
   right: 0;
-  top: 94%;
-  height: 6%;
+  top: 90%;
+  height: 10%;
   border-top: 4px solid var(--ink);
   background: repeating-linear-gradient(135deg, transparent 0 9px, rgba(20, 32, 31, 0.13) 9px 11px);
 }
@@ -2282,10 +2322,7 @@ h1 em {
 .show-hitboxes .sandbox-hitbox { opacity: 0.9; }
 .show-hitboxes .entity-ball .sandbox-hitbox,
 .show-hitboxes .entity-wheel .sandbox-hitbox,
-.show-hitboxes .entity-pulley .sandbox-hitbox,
-.show-hitboxes .entity-collision-target .sandbox-hitbox,
-.show-hitboxes .entity-pivot .sandbox-hitbox,
-.show-hitboxes .entity-circular-track .sandbox-hitbox { border-radius: 50%; }
+.show-hitboxes .entity-pulley .sandbox-hitbox { border-radius: 50%; }
 
 .sandbox-hitbox > i {
   position: absolute;
@@ -2378,6 +2415,28 @@ h1 em {
 
 .entity-rod .sandbox-shape { background: #8ab1e8; }
 
+.rod-anchor-points {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-inline: 4px;
+}
+
+.rod-anchor-points i {
+  width: 11px;
+  height: 11px;
+  border: 2px solid var(--ink);
+  border-radius: 50%;
+  background: var(--surface);
+}
+
+.rod-anchor-points i.active {
+  background: var(--orange);
+  box-shadow: 0 0 0 3px var(--surface), 0 0 0 5px var(--orange);
+}
+
 .entity-wheel .sandbox-shape {
   border-width: 4px;
   border-radius: 50%;
@@ -2404,33 +2463,6 @@ h1 em {
   background: var(--orange);
 }
 
-.entity-pivot .sandbox-shape {
-  border-radius: 50%;
-  background: var(--surface);
-  box-shadow: none;
-}
-
-.entity-pivot .sandbox-shape::before,
-.entity-pivot .sandbox-shape::after {
-  content: "";
-  position: absolute;
-  left: 50%;
-  top: 50%;
-  width: 150%;
-  height: 3px;
-  background: var(--ink);
-  transform: translate(-50%, -50%);
-}
-
-.entity-pivot .sandbox-shape::after { transform: translate(-50%, -50%) rotate(90deg); }
-
-.entity-circular-track .sandbox-shape {
-  border: 6px double var(--green);
-  border-radius: 50%;
-  background: transparent;
-  box-shadow: none;
-}
-
 .entity-gravity-region { z-index: 3; }
 .entity-gravity-region .sandbox-shape {
   border: 2px dashed var(--blue);
@@ -2445,21 +2477,6 @@ h1 em {
   color: var(--blue);
   font-size: 2.2rem;
   transform-origin: center;
-}
-
-.entity-collision-target .sandbox-shape {
-  border: 4px double var(--ink);
-  border-radius: 50%;
-  background: var(--orange-soft);
-  box-shadow: 4px 4px 0 var(--ink);
-}
-
-.entity-collision-target .sandbox-shape i {
-  position: absolute;
-  inset: 25%;
-  border: 2px solid var(--orange);
-  border-radius: 50%;
-  background: var(--surface);
 }
 
 .entity-pendulum .sandbox-shape {
@@ -2504,6 +2521,40 @@ h1 em {
   background: var(--orange);
   box-shadow: 3px 3px 0 var(--ink);
 }
+
+.sandbox-resize-handle {
+  position: absolute;
+  z-index: 29;
+  width: 17px;
+  height: 17px;
+  padding: 0;
+  border: 3px solid var(--surface);
+  border-radius: 2px;
+  background: var(--orange);
+  box-shadow: 0 0 0 2px var(--ink);
+  cursor: nwse-resize;
+  touch-action: none;
+}
+
+.sandbox-resize-handle.handle-start {
+  left: -9px;
+  top: 50%;
+  transform: translateY(-50%);
+  cursor: ew-resize;
+}
+
+.sandbox-resize-handle.handle-end {
+  right: -9px;
+  top: 50%;
+  transform: translateY(-50%);
+  cursor: ew-resize;
+}
+
+.sandbox-resize-handle.handle-nw { left: -9px; top: -9px; }
+.sandbox-resize-handle.handle-ne { right: -9px; top: -9px; cursor: nesw-resize; }
+.sandbox-resize-handle.handle-sw { left: -9px; bottom: -9px; cursor: nesw-resize; }
+.sandbox-resize-handle.handle-se,
+.sandbox-resize-handle.handle-scale { right: -9px; bottom: -9px; }
 
 .sandbox-link-port {
   position: absolute;
@@ -2800,6 +2851,39 @@ h1 em {
   font-size: 0.62rem;
   font-weight: 750;
 }
+
+.sandbox-anchor-control {
+  min-height: 72px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+  display: grid;
+  gap: 8px;
+}
+
+.sandbox-anchor-control > span {
+  font-size: 0.6rem;
+  font-weight: 750;
+}
+
+.sandbox-anchor-control > div {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+}
+
+.sandbox-anchor-control button {
+  min-height: 33px;
+  padding: 0 5px;
+  border: 1px solid var(--line-dark);
+  background: var(--surface);
+  color: var(--ink);
+  cursor: pointer;
+  font-size: 0.5rem;
+  font-weight: 850;
+  text-transform: uppercase;
+}
+
+.sandbox-anchor-control button + button { border-left: 0; }
+.sandbox-anchor-control button.active { background: var(--green); color: white; }
 
 .sandbox-snap-status {
   margin-bottom: 9px;
@@ -3177,6 +3261,10 @@ footer p {
   }
 
   .sandbox-stage {
+    height: 500px;
+  }
+
+  .sandbox-world {
     height: 500px;
   }
 

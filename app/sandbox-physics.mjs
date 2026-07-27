@@ -1,4 +1,6 @@
 export const WORLD_SCALE = 7;
+export const GRID_STEP = 5;
+export const GROUND_Y = 90;
 
 export const SANDBOX_TOOLS = [
   { type: "block", label: "Block", category: "Objects", description: "Adjustable mass, size, velocity, and friction." },
@@ -7,19 +9,16 @@ export const SANDBOX_TOOLS = [
   { type: "rod", label: "Rod / beam", category: "Objects", description: "Torque, equilibrium, and rotational setups." },
   { type: "wheel", label: "Wheel / disk", category: "Objects", description: "Adjustable radius, mass, and rotational inertia." },
   { type: "pendulum", label: "Pendulum", category: "Objects", description: "A mass attached to a string or rigid rod." },
-  { type: "collision-target", label: "Collision target", category: "Objects", description: "A fixed target for impact experiments." },
   { type: "platform", label: "Fixed platform", category: "Structures", description: "Creates floors, walls, ledges, and obstacles." },
   { type: "incline", label: "Inclined plane", category: "Structures", description: "Adjustable angle, length, and friction." },
   { type: "pulley", label: "Pulley", category: "Structures", description: "A fixed or movable wheel for connected systems." },
-  { type: "pivot", label: "Pivot / hinge", category: "Structures", description: "Marks a point an object can rotate around." },
-  { type: "circular-track", label: "Circular track", category: "Structures", description: "Loops, banked curves, and vertical-circle setups." },
-  { type: "gravity-region", label: "Gravity region", category: "Fields", description: "Overrides gravitational strength and direction." },
+  { type: "gravity-region", label: "Gravity region", category: "Fields", description: "Drag its corners to resize a gravity field." },
   { type: "rope", label: "Rope / string", category: "Connections", description: "Choose two endpoints, then route the rope around pulleys." },
   { type: "spring", label: "Spring", category: "Connections", description: "Connects two objects with adjustable stiffness and length." },
 ];
 
 const DYNAMIC_TYPES = new Set(["block", "ball", "cart", "rod", "wheel"]);
-const STATIC_COLLIDER_TYPES = new Set(["platform", "incline", "collision-target", "pulley", "pivot", "pendulum"]);
+const STATIC_COLLIDER_TYPES = new Set(["platform", "incline", "pulley", "pendulum"]);
 const TAU = Math.PI * 2;
 
 const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
@@ -47,6 +46,14 @@ export function isDynamicItem(item) {
   return DYNAMIC_TYPES.has(item.type) || (item.type === "pulley" && !item.fixed);
 }
 
+export function isFixedItem(item) {
+  return !isDynamicItem(item) || (item.type === "rod" && item.anchorEnabled);
+}
+
+export function snapToGrid(value, step = GRID_STEP) {
+  return Math.round(value / step) * step;
+}
+
 export function createSandboxItem(type, id, x = 50, y = 35) {
   const definition = SANDBOX_TOOLS.find((tool) => tool.type === type);
   if (!definition || type === "rope" || type === "spring") {
@@ -67,6 +74,8 @@ export function createSandboxItem(type, id, x = 50, y = 35) {
     initialVy: 0,
     mass: 2,
     size: 1.2,
+    width: 5,
+    height: 5,
     friction: 0.2,
     restitution: 0.25,
     angle: 0,
@@ -78,6 +87,10 @@ export function createSandboxItem(type, id, x = 50, y = 35) {
     gravityStrength: 9.81,
     gravityDirection: 90,
     fixed: !DYNAMIC_TYPES.has(type),
+    anchorEnabled: false,
+    anchorPosition: 0,
+    anchorX: x,
+    anchorY: y,
     snapTargetId: null,
     snapOffsetX: 0,
     snapOffsetY: 0,
@@ -87,16 +100,13 @@ export function createSandboxItem(type, id, x = 50, y = 35) {
 
   if (type === "ball") return { ...base, mass: 1, size: 1, vx: 3, vy: -4, initialVx: 3, initialVy: -4, restitution: 0.72 };
   if (type === "cart") return { ...base, mass: 3, size: 1.6, vx: 2, initialVx: 2, friction: 0.05, restitution: 0.1 };
-  if (type === "platform") return { ...base, size: 5, friction: 0.25 };
-  if (type === "incline") return { ...base, size: 5, angle: 28, initialAngle: 28, friction: 0.18 };
+  if (type === "platform") return { ...base, size: 5, friction: 0.25, restitution: 1 };
+  if (type === "incline") return { ...base, size: 5, angle: 28, initialAngle: 28, friction: 0.18, restitution: 1 };
   if (type === "pulley") return { ...base, size: 1.5, radius: 0.75 };
-  if (type === "pivot") return { ...base, size: 0.6 };
-  if (type === "rod") return { ...base, size: 3, angle: 15, initialAngle: 15, inertia: 2 };
+  if (type === "rod") return { ...base, size: 3, angle: 15, initialAngle: 15, inertia: 2, restitution: 1 };
   if (type === "wheel") return { ...base, mass: 2, size: 1.5, radius: 0.75, inertia: 0.56, vx: 2, initialVx: 2, restitution: 0.4 };
   if (type === "pendulum") return { ...base, mass: 1, size: 1, length: 3, angle: 24, initialAngle: 24, angularVelocity: 0 };
-  if (type === "circular-track") return { ...base, size: 5, radius: 2.5 };
-  if (type === "gravity-region") return { ...base, size: 5, gravityStrength: 9.81, gravityDirection: 90 };
-  if (type === "collision-target") return { ...base, size: 1.8, restitution: 0.82 };
+  if (type === "gravity-region") return { ...base, size: 5, width: 8, height: 5, gravityStrength: 9.81, gravityDirection: 90 };
   return base;
 }
 
@@ -130,25 +140,19 @@ export function getItemHitboxes(item) {
 
   if (item.type === "ball") return [circle((item.size * WORLD_SCALE) / 2)];
   if (item.type === "wheel" || item.type === "pulley") return [circle(item.radius * WORLD_SCALE)];
-  if (item.type === "collision-target") return [circle((item.size * WORLD_SCALE) / 2)];
-  if (item.type === "pivot") return [circle(Math.max(item.size * WORLD_SCALE * 0.45, 1.8))];
-  if (item.type === "cart") return [box((item.size * WORLD_SCALE) / 2, item.size * WORLD_SCALE * 0.31, 0)];
+  if (item.type === "cart") return [box((item.size * WORLD_SCALE) / 2, item.size * WORLD_SCALE * 0.31)];
   if (item.type === "rod") return [box((item.size * WORLD_SCALE) / 2, WORLD_SCALE * 0.18)];
   if (item.type === "platform") return [box((item.size * WORLD_SCALE) / 2, WORLD_SCALE * 0.18)];
   if (item.type === "incline") return [box((item.size * WORLD_SCALE) / 2, WORLD_SCALE * 0.18, -item.angle)];
-  if (item.type === "circular-track") {
-    return [{
-      kind: "ring",
-      x: item.x,
-      y: item.y,
-      radius: Math.max(item.radius * WORLD_SCALE, 2),
-      thickness: WORLD_SCALE * 0.42,
-      part: "track",
-    }];
-  }
   if (item.type === "gravity-region") {
-    const half = item.size * 4.2;
-    return [box(half, half, 0, item.x, item.y, "field")];
+    return [box(
+      ((item.width ?? item.size) * WORLD_SCALE) / 2,
+      ((item.height ?? item.size) * WORLD_SCALE) / 2,
+      0,
+      item.x,
+      item.y,
+      "field",
+    )];
   }
   if (item.type === "pendulum") {
     const theta = radians(item.angle);
@@ -242,7 +246,6 @@ function boxBoxManifold(a, b) {
 export function collisionManifold(first, second) {
   const a = first.kind ? first : getItemHitbox(first);
   const b = second.kind ? second : getItemHitbox(second);
-  if (a.kind === "ring" || b.kind === "ring") return null;
   if (a.kind === "circle" && b.kind === "circle") return circleCircleManifold(a, b);
   if (a.kind === "circle" && b.kind === "box") return circleBoxManifold(a, b);
   if (a.kind === "box" && b.kind === "circle") {
@@ -257,13 +260,11 @@ export function collisionManifold(first, second) {
 function shapeExtent(item, axis) {
   const shape = getItemHitbox(item);
   if (shape.kind === "circle") return shape.radius;
-  if (shape.kind === "ring") return shape.radius + shape.thickness / 2;
   return projectionRadius(shape, axis);
 }
 
 function shapeSupport(shape, axis) {
   if (shape.kind === "circle") return shape.radius;
-  if (shape.kind === "ring") return shape.radius + shape.thickness / 2;
   return projectionRadius(shape, axis);
 }
 
@@ -279,29 +280,6 @@ function snapToCircle(item, draggedShape, targetShape) {
     x: item.x + shift.x,
     y: item.y + shift.y,
     normal,
-    distance: Math.hypot(shift.x, shift.y),
-    part: targetShape.part,
-  };
-}
-
-function snapToRing(item, draggedShape, targetShape) {
-  const normal = normalize({ x: draggedShape.x - targetShape.x, y: draggedShape.y - targetShape.y });
-  const centerDistance = Math.hypot(draggedShape.x - targetShape.x, draggedShape.y - targetShape.y);
-  const support = shapeSupport(draggedShape, normal);
-  const insideRadius = Math.max(0.5, targetShape.radius - targetShape.thickness / 2 - support);
-  const outsideRadius = targetShape.radius + targetShape.thickness / 2 + support;
-  const snappedRadius = Math.abs(centerDistance - insideRadius) <= Math.abs(centerDistance - outsideRadius)
-    ? insideRadius
-    : outsideRadius;
-  const desiredShape = {
-    x: targetShape.x + normal.x * snappedRadius,
-    y: targetShape.y + normal.y * snappedRadius,
-  };
-  const shift = { x: desiredShape.x - draggedShape.x, y: desiredShape.y - draggedShape.y };
-  return {
-    x: item.x + shift.x,
-    y: item.y + shift.y,
-    normal: snappedRadius === insideRadius ? { x: -normal.x, y: -normal.y } : normal,
     distance: Math.hypot(shift.x, shift.y),
     part: targetShape.part,
   };
@@ -358,9 +336,7 @@ export function findSnapPlacement(item, items, threshold = 4.2) {
     for (const targetShape of getItemHitboxes(target)) {
       const candidate = targetShape.kind === "circle"
         ? snapToCircle(item, draggedShape, targetShape)
-        : targetShape.kind === "ring"
-          ? snapToRing(item, draggedShape, targetShape)
-          : snapToBox(item, draggedShape, targetShape);
+        : snapToBox(item, draggedShape, targetShape);
       if (candidate.distance > threshold) continue;
       const score = candidate.distance + (isDynamicItem(target) ? 0.35 : 0);
       if (!best || score < best.score) {
@@ -369,7 +345,7 @@ export function findSnapPlacement(item, items, threshold = 4.2) {
           score,
           targetId: target.id,
           targetLabel: target.label,
-          persistent: !isDynamicItem(item),
+          persistent: isFixedItem(item),
         };
       }
     }
@@ -380,8 +356,9 @@ export function findSnapPlacement(item, items, threshold = 4.2) {
 function gravityFor(item, items) {
   const region = [...items].reverse().find((candidate) => {
     if (candidate.type !== "gravity-region") return false;
-    const half = candidate.size * 4.2;
-    return Math.abs(item.x - candidate.x) <= half && Math.abs(item.y - candidate.y) <= half;
+    const halfWidth = ((candidate.width ?? candidate.size) * WORLD_SCALE) / 2;
+    const halfHeight = ((candidate.height ?? candidate.size) * WORLD_SCALE) / 2;
+    return Math.abs(item.x - candidate.x) <= halfWidth && Math.abs(item.y - candidate.y) <= halfHeight;
   });
   const strength = region?.gravityStrength ?? 9.81;
   const direction = radians(region?.gravityDirection ?? 90);
@@ -417,30 +394,12 @@ function resolveStaticCollision(item, surface) {
   item.vy -= tangentVelocity * friction * tangent.y;
 }
 
-function collideWithCircularTrack(item, track) {
-  const dx = item.x - track.x;
-  const dy = item.y - track.y;
-  const centerDistance = Math.max(Math.hypot(dx, dy), 0.001);
-  const bodyExtent = Math.max(shapeExtent(item, { x: 1, y: 0 }), shapeExtent(item, { x: 0, y: 1 }));
-  const innerRadius = Math.max(4, track.radius * WORLD_SCALE) - bodyExtent;
-  if (centerDistance < innerRadius || centerDistance > innerRadius + bodyExtent * 1.8) return;
-  const normal = { x: dx / centerDistance, y: dy / centerDistance };
-  item.x = track.x + normal.x * innerRadius;
-  item.y = track.y + normal.y * innerRadius;
-  const outwardVelocity = item.vx * normal.x + item.vy * normal.y;
-  if (outwardVelocity > 0) {
-    item.vx -= (1 + item.restitution) * outwardVelocity * normal.x;
-    item.vy -= (1 + item.restitution) * outwardVelocity * normal.y;
-  }
-}
-
 function attachmentPoint(item, target) {
   const shape = getItemHitbox(item);
   const direction = { x: target.x - shape.x, y: target.y - shape.y };
   const unit = normalize(direction);
-  if (shape.kind === "circle" || shape.kind === "ring") {
-    const radius = shape.kind === "ring" ? shape.radius + shape.thickness / 2 : shape.radius;
-    return { x: shape.x + unit.x * radius, y: shape.y + unit.y * radius };
+  if (shape.kind === "circle") {
+    return { x: shape.x + unit.x * shape.radius, y: shape.y + unit.y * shape.radius };
   }
 
   const localDirection = rotate(direction, -shape.angle);
@@ -598,11 +557,11 @@ function applySpringForces(items, links, delta) {
     const stretch = centerDistance / WORLD_SCALE - link.naturalLength;
     const force = link.springConstant * stretch;
     const direction = { x: dx / centerDistance, y: dy / centerDistance };
-    if (isDynamicItem(a)) {
+    if (!isFixedItem(a)) {
       a.vx += (force / a.mass) * direction.x * delta;
       a.vy += (force / a.mass) * direction.y * delta;
     }
-    if (isDynamicItem(b)) {
+    if (!isFixedItem(b)) {
       b.vx -= (force / b.mass) * direction.x * delta;
       b.vy -= (force / b.mass) * direction.y * delta;
     }
@@ -613,7 +572,7 @@ function ropeParticipants(items, link) {
   const ids = [link.a, link.b, ...pulleyStops(link).map((stop) => stop.id)];
   return [...new Set(ids)]
     .map((id) => items.find((item) => item.id === id))
-    .filter((item) => item && isDynamicItem(item));
+    .filter((item) => item && !isFixedItem(item));
 }
 
 function ropeGradients(items, link, participants) {
@@ -682,7 +641,7 @@ function solveRopes(items, links) {
 }
 
 function solveBodyCollisions(items) {
-  const bodies = items.filter(isDynamicItem);
+  const bodies = items.filter((item) => isDynamicItem(item) && !isFixedItem(item));
   for (let first = 0; first < bodies.length; first += 1) {
     for (let second = first + 1; second < bodies.length; second += 1) {
       const a = bodies[first];
@@ -714,13 +673,12 @@ function solveBodyCollisions(items) {
 function keepInsideStage(item) {
   const horizontal = shapeExtent(item, { x: 1, y: 0 });
   const vertical = shapeExtent(item, { x: 0, y: 1 });
-  if (item.x < horizontal) { item.x = horizontal; item.vx = Math.abs(item.vx) * item.restitution; }
-  if (item.x > 100 - horizontal) { item.x = 100 - horizontal; item.vx = -Math.abs(item.vx) * item.restitution; }
-  if (item.y < vertical) { item.y = vertical; item.vy = Math.abs(item.vy) * item.restitution; }
-  if (item.y > 94 - vertical) {
-    item.y = 94 - vertical;
-    item.vy = Math.abs(item.vy) < 0.35 ? 0 : -Math.abs(item.vy) * item.restitution;
-    item.vx *= Math.max(0, 1 - item.friction * 0.12);
+  if (item.x < horizontal) { item.x = horizontal; item.vx = Math.abs(item.vx); }
+  if (item.x > 100 - horizontal) { item.x = 100 - horizontal; item.vx = -Math.abs(item.vx); }
+  if (item.y < vertical) { item.y = vertical; item.vy = Math.abs(item.vy); }
+  if (item.y > GROUND_Y - vertical) {
+    item.y = GROUND_Y - vertical;
+    item.vy = -Math.abs(item.vy);
   }
 }
 
@@ -729,8 +687,7 @@ function resolveEnvironment(item, items) {
   for (const surface of items) {
     if (surface.id === item.id) continue;
     if (surface.snapTargetId === item.id || item.snapTargetId === surface.id) continue;
-    if (surface.type === "circular-track") collideWithCircularTrack(item, surface);
-    if (!STATIC_COLLIDER_TYPES.has(surface.type)) continue;
+    if (!STATIC_COLLIDER_TYPES.has(surface.type) && !(surface.type === "rod" && surface.anchorEnabled)) continue;
     if (surface.type === "pulley" && !surface.fixed) continue;
     resolveStaticCollision(item, surface);
   }
@@ -740,16 +697,62 @@ function syncSnapAttachments(items) {
   const byId = new Map(items.map((item) => [item.id, item]));
   for (let pass = 0; pass < items.length; pass += 1) {
     for (const item of items) {
-      if (!item.snapTargetId || isDynamicItem(item)) continue;
+      if (!item.snapTargetId || !isFixedItem(item)) continue;
       const target = byId.get(item.snapTargetId);
       if (!target) {
         item.snapTargetId = null;
         continue;
       }
+      const previousX = item.x;
+      const previousY = item.y;
       item.x = target.x + (item.snapOffsetX ?? 0);
       item.y = target.y + (item.snapOffsetY ?? 0);
+      if (item.anchorEnabled) {
+        item.anchorX += item.x - previousX;
+        item.anchorY += item.y - previousY;
+      }
     }
   }
+}
+
+export function getRodAnchorPoint(item) {
+  const angle = radians(item.angle);
+  const offset = (item.anchorPosition ?? 0) * (item.size * WORLD_SCALE) / 2;
+  return {
+    x: item.x + Math.cos(angle) * offset,
+    y: item.y + Math.sin(angle) * offset,
+  };
+}
+
+function stepAnchoredRod(item, items, delta) {
+  if (item.type !== "rod" || !item.anchorEnabled) return false;
+  const anchor = {
+    x: Number.isFinite(item.anchorX) ? item.anchorX : getRodAnchorPoint(item).x,
+    y: Number.isFinite(item.anchorY) ? item.anchorY : getRodAnchorPoint(item).y,
+  };
+  const theta = radians(item.angle);
+  const centerOffset = -(item.anchorPosition ?? 0) * (item.size * WORLD_SCALE) / 2;
+  const centerFromAnchor = {
+    x: Math.cos(theta) * centerOffset,
+    y: Math.sin(theta) * centerOffset,
+  };
+  const gravity = gravityFor(item, items);
+  const force = { x: item.mass * gravity.x, y: item.mass * gravity.y };
+  const torqueWorld = centerFromAnchor.x * force.y - centerFromAnchor.y * force.x;
+  const torqueMeters = torqueWorld / WORLD_SCALE;
+  const angularAcceleration = torqueMeters / Math.max(item.inertia, 0.1);
+  item.angularVelocity += angularAcceleration * delta;
+  item.angle += item.angularVelocity * delta * (180 / Math.PI);
+
+  const nextTheta = radians(item.angle);
+  const nextOffset = -(item.anchorPosition ?? 0) * (item.size * WORLD_SCALE) / 2;
+  item.x = anchor.x + Math.cos(nextTheta) * nextOffset;
+  item.y = anchor.y + Math.sin(nextTheta) * nextOffset;
+  item.anchorX = anchor.x;
+  item.anchorY = anchor.y;
+  item.vx = 0;
+  item.vy = 0;
+  return true;
 }
 
 export function stepSandbox(items, links, deltaSeconds) {
@@ -767,6 +770,7 @@ export function stepSandbox(items, links, deltaSeconds) {
       item.angle += item.angularVelocity * delta * (180 / Math.PI);
       continue;
     }
+    if (stepAnchoredRod(item, next, delta)) continue;
     if (!isDynamicItem(item)) continue;
 
     if (item.type !== "cart") {
@@ -785,7 +789,9 @@ export function stepSandbox(items, links, deltaSeconds) {
 
   solveBodyCollisions(next);
   solveRopes(next, links);
-  for (const item of next.filter(isDynamicItem)) resolveEnvironment(item, next);
+  for (const item of next.filter((candidate) => isDynamicItem(candidate) && !isFixedItem(candidate))) {
+    resolveEnvironment(item, next);
+  }
   syncSnapAttachments(next);
   return next;
 }
@@ -800,6 +806,13 @@ export function resetSandbox(items) {
     angle: item.initialAngle,
     angularVelocity: 0,
   }));
+  for (const item of next) {
+    if (item.type === "rod" && item.anchorEnabled) {
+      const anchor = getRodAnchorPoint(item);
+      item.anchorX = anchor.x;
+      item.anchorY = anchor.y;
+    }
+  }
   syncSnapAttachments(next);
   return next;
 }

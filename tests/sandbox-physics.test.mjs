@@ -2,22 +2,33 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  GRID_STEP,
+  GROUND_Y,
   SANDBOX_TOOLS,
   collisionManifold,
   createSandboxItem,
   findSnapPlacement,
   getItemHitbox,
   getItemHitboxes,
+  getRodAnchorPoint,
   getRopeRoute,
   resetSandbox,
+  snapToGrid,
   stepSandbox,
 } from "../app/sandbox-physics.mjs";
 
 test("sandbox exposes every requested object and connector", () => {
   assert.deepEqual(
     SANDBOX_TOOLS.map((tool) => tool.type),
-    ["block", "ball", "cart", "rod", "wheel", "pendulum", "collision-target", "platform", "incline", "pulley", "pivot", "circular-track", "gravity-region", "rope", "spring"],
+    ["block", "ball", "cart", "rod", "wheel", "pendulum", "platform", "incline", "pulley", "gravity-region", "rope", "spring"],
   );
+});
+
+test("the click grid rounds placement and resize coordinates consistently", () => {
+  assert.equal(GRID_STEP, 5);
+  assert.equal(snapToGrid(12), 10);
+  assert.equal(snapToGrid(13), 15);
+  assert.equal(snapToGrid(31, 10), 30);
 });
 
 test("dynamic bodies advance under gravity while carts stay on their track", () => {
@@ -39,6 +50,19 @@ test("gravity regions override gravity direction inside their bounds", () => {
 
   assert.ok(next.vx > 0);
   assert.ok(Math.abs(next.vy) < 1e-9);
+});
+
+test("gravity regions use independently resizable width and height", () => {
+  const region = createSandboxItem("gravity-region", "region", 50, 50);
+  region.width = 1;
+  region.height = 8;
+  region.gravityDirection = 0;
+  const inside = createSandboxItem("block", "inside", 53, 50);
+  const outside = createSandboxItem("block", "outside", 55, 50);
+  const next = stepSandbox([region, inside, outside], [], 0.04);
+
+  assert.ok(next.find((item) => item.id === "inside").vx > 0);
+  assert.ok(next.find((item) => item.id === "outside").vy > 0);
 });
 
 test("ropes enforce their maximum length", () => {
@@ -123,6 +147,19 @@ test("a rotated platform uses its rectangular hitbox as a wall", () => {
   assert.ok(next.vx < 0);
 });
 
+test("the set ground and placed surfaces reflect perfectly elastically", () => {
+  const platform = createSandboxItem("platform", "platform", 50, 60);
+  const incline = createSandboxItem("incline", "incline", 70, 60);
+  const ball = createSandboxItem("ball", "ball", 40, GROUND_Y - 3.4);
+  ball.vx = 0;
+  ball.vy = 2;
+  const next = stepSandbox([platform, incline, ball], [], 0.04).find((item) => item.id === "ball");
+
+  assert.equal(platform.restitution, 1);
+  assert.equal(incline.restitution, 1);
+  assert.ok(next.vy < -2);
+});
+
 test("nearby objects snap to the exact surface of another hitbox", () => {
   const platform = createSandboxItem("platform", "platform", 50, 60);
   const block = createSandboxItem("block", "block", 50, 52);
@@ -137,10 +174,10 @@ test("nearby objects snap to the exact surface of another hitbox", () => {
 
 test("fixed structures receive persistent snaps while dynamic bodies remain temporary", () => {
   const platform = createSandboxItem("platform", "platform", 50, 60);
-  const pivot = createSandboxItem("pivot", "pivot", 50, 56);
+  const ledge = createSandboxItem("platform", "ledge", 50, 56);
   const ball = createSandboxItem("ball", "ball", 50, 52);
 
-  assert.equal(findSnapPlacement(pivot, [platform]).persistent, true);
+  assert.equal(findSnapPlacement(ledge, [platform]).persistent, true);
   assert.equal(findSnapPlacement(ball, [platform]).persistent, false);
 });
 
@@ -148,26 +185,25 @@ test("persistent attachments follow their target during simulation", () => {
   const block = createSandboxItem("block", "block", 30, 30);
   block.vx = 2;
   block.vy = 0;
-  const pivot = createSandboxItem("pivot", "pivot", 30, 22);
-  pivot.snapTargetId = "block";
-  pivot.snapOffsetX = 0;
-  pivot.snapOffsetY = -8;
-  const next = stepSandbox([block, pivot], [], 0.04);
+  const platform = createSandboxItem("platform", "platform", 30, 22);
+  platform.snapTargetId = "block";
+  platform.snapOffsetX = 0;
+  platform.snapOffsetY = -8;
+  const next = stepSandbox([block, platform], [], 0.04);
   const nextBlock = next.find((item) => item.id === "block");
-  const nextPivot = next.find((item) => item.id === "pivot");
+  const nextPlatform = next.find((item) => item.id === "platform");
 
-  assert.equal(nextPivot.x, nextBlock.x);
-  assert.equal(nextPivot.y, nextBlock.y - 8);
+  assert.equal(nextPlatform.x, nextBlock.x);
+  assert.equal(nextPlatform.y, nextBlock.y - 8);
 });
 
 test("compound and field objects expose their own hitbox geometry", () => {
   const pendulum = createSandboxItem("pendulum", "pendulum", 40, 20);
-  const track = createSandboxItem("circular-track", "track", 50, 50);
   const region = createSandboxItem("gravity-region", "region", 50, 50);
 
   assert.deepEqual(getItemHitboxes(pendulum).map((shape) => shape.part), ["bob", "arm", "pivot"]);
-  assert.equal(getItemHitbox(track).kind, "ring");
   assert.equal(getItemHitbox(region).part, "field");
+  assert.notEqual(getItemHitbox(region).halfWidth, getItemHitbox(region).halfHeight);
 });
 
 test("stretched springs accelerate connected objects toward each other", () => {
@@ -179,14 +215,21 @@ test("stretched springs accelerate connected objects toward each other", () => {
   assert.ok(nextB.vx < 0);
 });
 
-test("collision targets reflect approaching bodies", () => {
-  const target = createSandboxItem("collision-target", "target", 50, 50);
-  const ball = createSandboxItem("ball", "ball", 43, 50);
-  ball.vx = 5;
-  ball.vy = 0;
-  const next = stepSandbox([target, ball], [], 0.04).find((item) => item.id === "ball");
+test("rod anchors hold left, center, or right points while allowing rotation", () => {
+  const rod = createSandboxItem("rod", "rod", 50, 35);
+  rod.angle = 0;
+  rod.initialAngle = 0;
+  rod.anchorEnabled = true;
+  rod.anchorPosition = -1;
+  const anchor = getRodAnchorPoint(rod);
+  rod.anchorX = anchor.x;
+  rod.anchorY = anchor.y;
+  const next = stepSandbox([rod], [], 0.04)[0];
+  const nextAnchor = getRodAnchorPoint(next);
 
-  assert.ok(next.vx < 0);
+  assert.ok(Math.abs(next.angularVelocity) > 0);
+  assert.ok(Math.abs(nextAnchor.x - anchor.x) < 1e-9);
+  assert.ok(Math.abs(nextAnchor.y - anchor.y) < 1e-9);
 });
 
 test("reset restores placed positions and initial velocities", () => {
