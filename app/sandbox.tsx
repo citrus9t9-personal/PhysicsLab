@@ -131,7 +131,17 @@ function NumberControl({
 }
 
 function entityDimensions(item: SandboxItem) {
-  if (item.type === "platform" || item.type === "incline") return { width: `${clamp(item.size * WORLD_SCALE, GRID_STEP, 80)}%`, height: "25px" };
+  if (item.type === "platform") {
+    return {
+      width: `${clamp((item.width ?? item.size) * WORLD_SCALE, GRID_STEP, 80)}%`,
+      height: `${clamp((item.height ?? 1) * WORLD_SCALE, GRID_STEP, 40)}%`,
+    };
+  }
+  if (item.type === "incline") {
+    const width = clamp(item.size * WORLD_SCALE, GRID_STEP, 80);
+    const height = clamp(Math.tan((Math.abs(item.angle) * Math.PI) / 180) * item.size * 42, 32, 260);
+    return { width: `${width}%`, height: `${height}px` };
+  }
   if (item.type === "rod") return { width: `${clamp(item.size * WORLD_SCALE, GRID_STEP, 80)}%`, height: "24px" };
   if (item.type === "gravity-region") {
     return {
@@ -146,7 +156,7 @@ function entityDimensions(item: SandboxItem) {
 
 function itemTransform(item: SandboxItem) {
   if (item.type === "pendulum") return "translate(-50%, 0)";
-  const angle = item.type === "incline" ? -item.angle : item.angle;
+  const angle = item.type === "incline" ? 0 : item.angle;
   return `translate(-50%, -50%) rotate(${angle}deg)`;
 }
 
@@ -189,7 +199,7 @@ function attachedDescendants(items: SandboxItem[], rootId: string) {
 export default function SandboxLab() {
   const [items, setItems] = useState<SandboxItem[]>(() => createStarterSandbox());
   const [links, setLinks] = useState<SandboxLink[]>([]);
-  const [selectedItemId, setSelectedItemId] = useState<string | null>("starter-block");
+  const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
   const [selectedLinkId, setSelectedLinkId] = useState<string | null>(null);
   const [connectorTool, setConnectorTool] = useState<ConnectorType | null>(null);
   const [linkStartId, setLinkStartId] = useState<string | null>(null);
@@ -319,6 +329,8 @@ export default function SandboxLab() {
       if (key === "angle") next.initialAngle = Number(value);
       if (key === "size" && (item.type === "wheel" || item.type === "pulley")) next.radius = Number(value) / 2;
       if (key === "radius" && (item.type === "wheel" || item.type === "pulley")) next.size = Number(value) * 2;
+      if (key === "width" && item.type === "platform") next.size = Number(value);
+      if (key === "size" && item.type === "platform") next.width = Number(value);
       if (next.type === "rod" && next.anchorEnabled && (key === "angle" || key === "size")) {
         const theta = (next.angle * Math.PI) / 180;
         const offset = next.anchorPosition * (next.size * WORLD_SCALE) / 2;
@@ -501,7 +513,34 @@ export default function SandboxLab() {
     const original = resize.original;
     let nextItem = { ...original };
 
-    if (["platform", "incline", "rod"].includes(original.type)) {
+    if (original.type === "platform" || original.type === "gravity-region") {
+      const originalWidth = (original.type === "platform" ? original.width ?? original.size : original.width ?? original.size) * WORLD_SCALE;
+      const originalHeight = (original.type === "platform" ? original.height ?? 1 : original.height ?? original.size) * WORLD_SCALE;
+      const theta = original.type === "platform" ? (original.angle * Math.PI) / 180 : 0;
+      const horizontal = { x: Math.cos(theta), y: Math.sin(theta) };
+      const vertical = { x: -horizontal.y, y: horizontal.x };
+      const signX = resize.handle.includes("e") ? 1 : -1;
+      const signY = resize.handle.includes("s") ? 1 : -1;
+      const fixed = {
+        x: original.x - horizontal.x * signX * originalWidth / 2 - vertical.x * signY * originalHeight / 2,
+        y: original.y - horizontal.y * signX * originalWidth / 2 - vertical.y * signY * originalHeight / 2,
+      };
+      const delta = { x: moving.x - fixed.x, y: moving.y - fixed.y };
+      const width = Math.max(GRID_STEP, snapToGrid(signX * (delta.x * horizontal.x + delta.y * horizontal.y)));
+      const height = Math.max(GRID_STEP, snapToGrid(signY * (delta.x * vertical.x + delta.y * vertical.y)));
+      const projectedCorner = {
+        x: fixed.x + horizontal.x * signX * width + vertical.x * signY * height,
+        y: fixed.y + horizontal.y * signX * width + vertical.y * signY * height,
+      };
+      nextItem = {
+        ...nextItem,
+        x: (fixed.x + projectedCorner.x) / 2,
+        y: (fixed.y + projectedCorner.y) / 2,
+        width: width / WORLD_SCALE,
+        height: height / WORLD_SCALE,
+      };
+      if (original.type === "platform") nextItem.size = nextItem.width;
+    } else if (["incline", "rod"].includes(original.type)) {
       const visualAngle = original.type === "incline" ? -original.angle : original.angle;
       const theta = (visualAngle * Math.PI) / 180;
       const axis = { x: Math.cos(theta), y: Math.sin(theta) };
@@ -532,22 +571,6 @@ export default function SandboxLab() {
         nextItem.anchorX = original.anchorX;
         nextItem.anchorY = original.anchorY;
       }
-    } else if (original.type === "gravity-region") {
-      const originalWidth = (original.width ?? original.size) * WORLD_SCALE;
-      const originalHeight = (original.height ?? original.size) * WORLD_SCALE;
-      const fixed = {
-        x: original.x + (resize.handle.includes("w") ? originalWidth / 2 : -originalWidth / 2),
-        y: original.y + (resize.handle.includes("n") ? originalHeight / 2 : -originalHeight / 2),
-      };
-      const width = Math.max(GRID_STEP, snapToGrid(Math.abs(moving.x - fixed.x)));
-      const height = Math.max(GRID_STEP, snapToGrid(Math.abs(moving.y - fixed.y)));
-      nextItem = {
-        ...nextItem,
-        x: (moving.x + fixed.x) / 2,
-        y: (moving.y + fixed.y) / 2,
-        width: width / WORLD_SCALE,
-        height: height / WORLD_SCALE,
-      };
     } else {
       const radius = Math.max(Math.abs(moving.x - original.x), Math.abs(moving.y - original.y));
       const diameter = Math.max(GRID_STEP, snapToGrid(radius * 2));
@@ -691,7 +714,7 @@ export default function SandboxLab() {
   const loadStarter = () => {
     setItems(createStarterSandbox());
     setLinks([]);
-    setSelectedItemId("starter-block");
+    setSelectedItemId(null);
     setSelectedLinkId(null);
     setConnectorTool(null);
     setLinkStartId(null);
@@ -759,7 +782,9 @@ export default function SandboxLab() {
               <span>{links.length} connected</span>
               <span>grid {GRID_STEP}</span>
               <label className="sandbox-hitbox-toggle"><input type="checkbox" checked={showHitboxes} onChange={(event) => setShowHitboxes(event.target.checked)} /> Hitboxes</label>
-              <label>Speed <select value={playbackSpeed} onChange={(event) => setPlaybackSpeed(Number(event.target.value))}><option value={0.5}>0.5×</option><option value={1}>1×</option><option value={2}>2×</option></select></label>
+              <span className="sandbox-speed-buttons" role="group" aria-label="Sandbox playback speed">
+                {[0.5, 1, 2].map((speed) => <button key={speed} type="button" className={playbackSpeed === speed ? "active" : ""} onClick={() => setPlaybackSpeed(speed)} aria-pressed={playbackSpeed === speed}>{speed}×</button>)}
+              </span>
               <span className="sandbox-zoom-controls" aria-label="Canvas zoom">
                 <button type="button" onClick={() => setZoom((current) => clamp(current - 0.25, 0.5, 1.75))} aria-label="Zoom out">−</button>
                 <output>{Math.round(zoom * 100)}%</output>
@@ -829,14 +854,14 @@ export default function SandboxLab() {
             {items.map((item) => {
               const dimensions = entityDimensions(item);
               const speed = Math.hypot(item.vx, item.vy);
-              const visualAngle = item.type === "pendulum" ? 0 : item.type === "incline" ? -item.angle : item.angle;
+              const visualAngle = item.type === "pendulum" || item.type === "incline" ? 0 : item.angle;
               const activeSnap = snapGuide?.itemId === item.id ? snapGuide : null;
               const snapTarget = item.snapTargetId ? itemsById.get(item.snapTargetId) : null;
               return (
                 <div
                   key={item.id}
                   className={`sandbox-entity entity-${item.type} ${selectedItemId === item.id ? "selected" : ""} ${linkStartId === item.id ? "link-start" : ""} ${pulleyLinkId && item.type === "pulley" ? "pulley-target" : ""} ${activeSnap ? "snapping" : ""} ${snapTarget ? "attached" : ""}`}
-                  style={{ left: `${item.x}%`, top: `${item.y}%`, width: dimensions.width, height: dimensions.height, transform: itemTransform(item), "--entity-angle": `${visualAngle}deg`, "--counter-entity-angle": `${-visualAngle}deg`, "--pendulum-angle": `${item.angle}deg` } as CSSProperties}
+                  style={{ left: `${item.x}%`, top: `${item.y}%`, width: dimensions.width, height: dimensions.height, transform: itemTransform(item), "--entity-angle": `${visualAngle}deg`, "--counter-entity-angle": `${-visualAngle}deg`, "--pendulum-angle": `${item.angle}deg`, "--incline-angle": `${-item.angle}deg` } as CSSProperties}
                   role="button"
                   tabIndex={0}
                   aria-label={`${item.label} at ${item.x.toFixed(0)}, ${item.y.toFixed(0)}${snapTarget ? ` attached to ${snapTarget.label}` : ""}`}
@@ -885,12 +910,12 @@ export default function SandboxLab() {
                   {activeSnap && <span className="sandbox-snap-badge">{activeSnap.persistent ? "STICK" : "TEMP"} → {activeSnap.targetLabel}</span>}
                   {!activeSnap && snapTarget && <span className="sandbox-attachment-badge">STUCK → {snapTarget.label}</span>}
                   {selectedItemId === item.id && !running && (
-                    ["platform", "incline", "rod"].includes(item.type)
+                    ["incline", "rod"].includes(item.type)
                       ? <>
                         <button type="button" className="sandbox-resize-handle handle-start" aria-label={`Resize ${item.label} from its starting end`} onPointerDown={(event) => beginResize(event, item, "start")} onPointerMove={resizeItem} onPointerUp={endResize} onPointerCancel={endResize} />
                         <button type="button" className="sandbox-resize-handle handle-end" aria-label={`Resize ${item.label} from its ending end`} onPointerDown={(event) => beginResize(event, item, "end")} onPointerMove={resizeItem} onPointerUp={endResize} onPointerCancel={endResize} />
                       </>
-                      : item.type === "gravity-region"
+                      : item.type === "gravity-region" || item.type === "platform"
                         ? ["nw", "ne", "sw", "se"].map((handle) => <button key={handle} type="button" className={`sandbox-resize-handle handle-${handle}`} aria-label={`Resize ${item.label} from the ${handle.toUpperCase()} corner`} onPointerDown={(event) => beginResize(event, item, handle)} onPointerMove={resizeItem} onPointerUp={endResize} onPointerCancel={endResize} />)
                         : <button type="button" className="sandbox-resize-handle handle-scale" aria-label={`Resize ${item.label}`} onPointerDown={(event) => beginResize(event, item, "scale")} onPointerMove={resizeItem} onPointerUp={endResize} onPointerCancel={endResize} />
                   )}
@@ -915,19 +940,19 @@ export default function SandboxLab() {
           </div>
 
           <div className="sandbox-stage-actions"><button type="button" onClick={loadStarter}>Load starter setup</button><button type="button" onClick={clear}>Clear canvas</button><span>Drag corner handles to resize · surface contacts are perfectly elastic.</span></div>
-        </div>
 
-        <aside className="sandbox-inspector" aria-label="Selected item properties">
-          <div className="sandbox-panel-title"><span>Properties</span><small>{selectedItem ? selectedItem.label : selectedLink ? selectedLink.type : "Nothing selected"}</small></div>
+        <aside className="sandbox-inspector sandbox-properties-popover" aria-label="Selected item properties" hidden={!selectedItem && !selectedLink}>
+          <div className="sandbox-panel-title"><span>Properties</span><small>{selectedItem ? selectedItem.label : selectedLink?.type}</small><button type="button" onClick={() => { setSelectedItemId(null); setSelectedLinkId(null); setPulleyLinkId(null); }} aria-label="Close properties">×</button></div>
           {selectedItem ? (
             <div className="sandbox-properties">
               <div className="sandbox-selection-name"><span aria-hidden="true">{ICONS[selectedItem.type]}</span><div><strong>{selectedItem.label}</strong><small>{isFixedItem(selectedItem) ? "Anchored structure" : selectedItem.type === "pendulum" ? "Oscillating system" : "Dynamic object"}</small></div></div>
               {selectedItem.snapTargetId && <div className="sandbox-snap-status"><span><small>Persistent snap</small><strong>Stuck to {itemsById.get(selectedItem.snapTargetId)?.label ?? "surface"}</strong></span><button type="button" onClick={() => setItems((current) => current.map((item) => item.id === selectedItem.id ? { ...item, snapTargetId: null, snapOffsetX: 0, snapOffsetY: 0 } : item))}>Detach</button></div>}
               {(["block", "ball", "cart", "rod", "wheel", "pendulum", "pulley"].includes(selectedItem.type)) && <NumberControl label="Mass" value={selectedItem.mass} min={0.2} max={12} step={0.1} unit="kg" onChange={(value) => updateItem(selectedItem.id, "mass", value)} />}
-              {selectedItem.type !== "gravity-region" && <NumberControl label={selectedItem.type === "platform" || selectedItem.type === "incline" || selectedItem.type === "rod" ? "Length" : "Size"} value={selectedItem.size} min={0.5} max={8} step={0.1} unit="m" onChange={(value) => updateItem(selectedItem.id, "size", value)} />}
+              {!["gravity-region", "platform"].includes(selectedItem.type) && <NumberControl label={selectedItem.type === "incline" || selectedItem.type === "rod" ? "Length" : "Size"} value={selectedItem.size} min={0.5} max={8} step={0.1} unit="m" onChange={(value) => updateItem(selectedItem.id, "size", value)} />}
+              {selectedItem.type === "platform" && <><NumberControl label="Platform length" value={selectedItem.width} min={GRID_STEP / WORLD_SCALE} max={12} step={0.1} unit="m" onChange={(value) => updateItem(selectedItem.id, "width", value)} /><NumberControl label="Platform height" value={selectedItem.height} min={GRID_STEP / WORLD_SCALE} max={5} step={0.1} unit="m" onChange={(value) => updateItem(selectedItem.id, "height", value)} /></>}
               {!isFixedItem(selectedItem) && <><NumberControl label="Initial velocity x" value={selectedItem.initialVx} min={-10} max={10} step={0.25} unit="m/s" onChange={(value) => updateItem(selectedItem.id, "vx", value)} />{selectedItem.type !== "cart" && <NumberControl label="Initial velocity y" value={selectedItem.initialVy} min={-10} max={10} step={0.25} unit="m/s" onChange={(value) => updateItem(selectedItem.id, "vy", value)} />}</>}
               {(["block", "cart", "platform", "incline"].includes(selectedItem.type)) && <NumberControl label="Friction μ" value={selectedItem.friction} min={0} max={1} step={0.01} unit="" onChange={(value) => updateItem(selectedItem.id, "friction", value)} />}
-              {(["block", "cart", "incline", "rod", "pendulum", "platform"].includes(selectedItem.type)) && <NumberControl label={selectedItem.type === "platform" || selectedItem.type === "incline" ? "Surface angle" : "Starting rotation"} value={selectedItem.initialAngle} min={-90} max={90} step={1} unit="°" onChange={(value) => updateItem(selectedItem.id, "angle", value)} />}
+              {(["block", "cart", "incline", "rod", "pendulum", "platform"].includes(selectedItem.type)) && <NumberControl label={selectedItem.type === "platform" || selectedItem.type === "incline" ? "Surface angle" : "Starting rotation"} value={selectedItem.initialAngle} min={selectedItem.type === "incline" ? 5 : -90} max={selectedItem.type === "incline" ? 70 : 90} step={1} unit="°" onChange={(value) => updateItem(selectedItem.id, "angle", value)} />}
               {selectedItem.type === "pendulum" && <NumberControl label="Pendulum length" value={selectedItem.length} min={0.5} max={5} step={0.1} unit="m" onChange={(value) => updateItem(selectedItem.id, "length", value)} />}
               {(["wheel", "pulley"].includes(selectedItem.type)) && <NumberControl label="Radius" value={selectedItem.radius} min={0.3} max={4} step={0.1} unit="m" onChange={(value) => updateItem(selectedItem.id, "radius", value)} />}
               {(["wheel", "rod"].includes(selectedItem.type)) && <NumberControl label="Rotational inertia" value={selectedItem.inertia} min={0.1} max={10} step={0.1} unit="kg·m²" onChange={(value) => updateItem(selectedItem.id, "inertia", value)} />}
@@ -954,10 +979,9 @@ export default function SandboxLab() {
               </div>}
               <button type="button" className="sandbox-delete" onClick={removeSelected}>Remove connection</button>
             </div>
-          ) : (
-            <div className="sandbox-inspector-empty"><span>↖</span><strong>Select an object</strong><p>Its mass, size, velocity, friction, and special properties will appear here.</p></div>
-          )}
+          ) : null}
         </aside>
+        </div>
       </div>
     </section>
   );

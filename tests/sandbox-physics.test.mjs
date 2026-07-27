@@ -89,6 +89,20 @@ test("hitboxes follow each object's actual shape instead of one circular approxi
   assert.equal(collisionManifold(rod, block), null);
 });
 
+test("platform hitboxes resize as full rectangles while inclines keep a sloped surface", () => {
+  const platform = createSandboxItem("platform", "platform", 40, 50);
+  platform.width = 6;
+  platform.height = 2;
+  const platformBox = getItemHitbox(platform);
+  const incline = createSandboxItem("incline", "incline", 60, 50);
+  const inclineBox = getItemHitbox(incline);
+
+  assert.equal(platformBox.halfWidth, 21);
+  assert.equal(platformBox.halfHeight, 7);
+  assert.equal(inclineBox.angle, (-incline.angle * Math.PI) / 180);
+  assert.ok(inclineBox.halfWidth > inclineBox.halfHeight * 10);
+});
+
 test("ropes attach at object surfaces and wrap around a pulley rim", () => {
   const start = createSandboxItem("block", "start", 20, 70);
   const end = createSandboxItem("block", "end", 80, 70);

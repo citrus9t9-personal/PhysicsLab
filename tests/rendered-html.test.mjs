@@ -29,8 +29,8 @@ test("server-renders the complete MotionLab simulator", async () => {
 
   const html = await response.text();
   assert.match(html, /<title>MotionLab — Interactive AP Physics Simulator<\/title>/i);
-  assert.match(html, /See the forces/);
-  assert.match(html, /behind the motion\./);
+  assert.match(html, /Build the motion\./);
+  assert.match(html, /Read every change\./);
   assert.match(html, /Kinematics/);
   assert.match(html, /Pulleys/);
   assert.match(html, /Collisions/);
@@ -40,12 +40,10 @@ test("server-renders the complete MotionLab simulator", async () => {
   assert.match(html, /Run experiment/);
   assert.match(html, /past position/);
   assert.match(html, /apex · vᵧ = 0/);
-  assert.match(html, /Snapshot analysis/);
-  assert.match(html, /Capture this moment/);
-  assert.match(html, /Experiment notebook/);
-  assert.match(html, /No moments captured yet/);
+  assert.match(html, /Live analysis/);
   assert.match(html, /Free-body diagram/);
   assert.match(html, /Graphs/);
+  assert.doesNotMatch(html, /See the forces|behind the motion|Capture this moment|Experiment notebook/);
   assert.doesNotMatch(html, /Codex is working|Your site is taking shape/);
 });
 
@@ -66,8 +64,9 @@ test("renders accessible controls with the planned projectile defaults", async (
     /<input(?=[^>]*id="projectile-mass")(?=[^>]*min="0\.5")(?=[^>]*max="8")(?=[^>]*step="0\.5")(?=[^>]*value="1\.5")[^>]*>/i,
   );
   assert.match(html, /aria-label="Simulation timeline"/i);
-  assert.match(html, /<option value="0\.5" selected="">0\.5×<\/option>/i);
+  assert.match(html, /aria-label="Playback speed"/i);
+  assert.match(html, /aria-pressed="true">0\.5(?:<!-- -->)?×<\/button>/i);
+  assert.doesNotMatch(html, /<select\b|<option\b/i);
   assert.match(html, /aria-live="polite"/i);
-  assert.match(html, /Save values at/i);
   assert.match(html, /Reset current experiment/);
 });

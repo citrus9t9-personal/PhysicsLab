@@ -100,7 +100,7 @@ export function createSandboxItem(type, id, x = 50, y = 35) {
 
   if (type === "ball") return { ...base, mass: 1, size: 1, vx: 3, vy: -4, initialVx: 3, initialVy: -4, restitution: 0.72 };
   if (type === "cart") return { ...base, mass: 3, size: 1.6, vx: 2, initialVx: 2, friction: 0.05, restitution: 0.1 };
-  if (type === "platform") return { ...base, size: 5, friction: 0.25, restitution: 1 };
+  if (type === "platform") return { ...base, size: 5, width: 5, height: 1, friction: 0.25, restitution: 1 };
   if (type === "incline") return { ...base, size: 5, angle: 28, initialAngle: 28, friction: 0.18, restitution: 1 };
   if (type === "pulley") return { ...base, size: 1.5, radius: 0.75 };
   if (type === "rod") return { ...base, size: 3, angle: 15, initialAngle: 15, inertia: 2, restitution: 1 };
@@ -142,7 +142,12 @@ export function getItemHitboxes(item) {
   if (item.type === "wheel" || item.type === "pulley") return [circle(item.radius * WORLD_SCALE)];
   if (item.type === "cart") return [box((item.size * WORLD_SCALE) / 2, item.size * WORLD_SCALE * 0.31)];
   if (item.type === "rod") return [box((item.size * WORLD_SCALE) / 2, WORLD_SCALE * 0.18)];
-  if (item.type === "platform") return [box((item.size * WORLD_SCALE) / 2, WORLD_SCALE * 0.18)];
+  if (item.type === "platform") {
+    return [box(
+      ((item.width ?? item.size) * WORLD_SCALE) / 2,
+      ((item.height ?? 1) * WORLD_SCALE) / 2,
+    )];
+  }
   if (item.type === "incline") return [box((item.size * WORLD_SCALE) / 2, WORLD_SCALE * 0.18, -item.angle)];
   if (item.type === "gravity-region") {
     return [box(

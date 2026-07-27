@@ -6,6 +6,8 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type PointerEvent,
+  type WheelEvent,
 } from "react";
 
 import {
@@ -15,7 +17,7 @@ import {
   resolveBlockCollision,
   springMotion,
 } from "./physics.mjs";
-import { getFixedGraphScale, revealGraphSamples } from "./graph.mjs";
+import { getFixedGraphScale, getGraphGridStep, revealGraphSamples } from "./graph.mjs";
 import SandboxLab from "./sandbox";
 
 type ScenarioId = "projectile" | "incline" | "pulley" | "collision" | "spring";
@@ -77,23 +79,6 @@ interface ScenarioDefinition {
   shortName: string;
   description: string;
   principle: string;
-}
-
-interface LabSnapshot {
-  id: string;
-  scenario: ScenarioId;
-  scenarioName: string;
-  time: number;
-  trackedObject: TrackedObject;
-  values: LabValues;
-  collisionMode: CollisionMode;
-  frame: Frame;
-}
-
-interface SnapshotMetric {
-  label: string;
-  value: number;
-  unit: string;
 }
 
 const G = 9.81;
@@ -652,6 +637,21 @@ function GraphCanvas({
   duration: number;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const graphScale = useMemo(() => getFixedGraphScale(samples, metric), [samples, metric]);
+  const defaultView = useMemo(() => ({
+    xCenter: duration / 2,
+    xSpan: Math.max(duration * 1.16, 0.5),
+    yCenter: (graphScale.min + graphScale.max) / 2,
+    ySpan: Math.max((graphScale.max - graphScale.min) * 1.16, 0.5),
+  }), [duration, graphScale]);
+  const [view, setView] = useState(defaultView);
+  const [dragging, setDragging] = useState(false);
+  const panRef = useRef<{
+    pointerId: number;
+    clientX: number;
+    clientY: number;
+    view: typeof defaultView;
+  } | null>(null);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -668,69 +668,201 @@ function GraphCanvas({
 
       const width = rect.width;
       const height = rect.height;
-      const padding = { top: 28, right: 24, bottom: 38, left: 56 };
+      const padding = { top: 22, right: 22, bottom: 38, left: 58 };
       const plotWidth = width - padding.left - padding.right;
       const plotHeight = height - padding.top - padding.bottom;
-      const { min, max } = getFixedGraphScale(samples, metric);
       const visibleSamples = revealGraphSamples(samples, metric, currentTime);
+      const xMin = view.xCenter - view.xSpan / 2;
+      const xMax = view.xCenter + view.xSpan / 2;
+      const yMin = view.yCenter - view.ySpan / 2;
+      const yMax = view.yCenter + view.ySpan / 2;
+      const xStep = getGraphGridStep(view.xSpan, 11);
+      const yStep = getGraphGridStep(view.ySpan, 9);
+      const toX = (value: number) => padding.left + ((value - xMin) / view.xSpan) * plotWidth;
+      const toY = (value: number) => padding.top + ((yMax - value) / view.ySpan) * plotHeight;
+      const rootStyles = getComputedStyle(document.documentElement);
+      const ink = rootStyles.getPropertyValue("--ink").trim() || "#14201f";
+      const muted = rootStyles.getPropertyValue("--muted").trim() || "#65706d";
+      const line = rootStyles.getPropertyValue("--line").trim() || "#c9cec8";
+      const orange = rootStyles.getPropertyValue("--orange").trim() || "#ed5a32";
+      const green = rootStyles.getPropertyValue("--green").trim() || "#1a4b43";
+      const surface = rootStyles.getPropertyValue("--surface-strong").trim() || "#ffffff";
+      const formatTick = (value: number, step: number) => {
+        const decimals = step < 0.01 ? 3 : step < 0.1 ? 2 : step < 1 ? 1 : 0;
+        const clean = Math.abs(value) < step / 100 ? 0 : value;
+        return clean.toFixed(decimals);
+      };
 
-      context.clearRect(0, 0, width, height);
-      context.strokeStyle = "rgba(20, 32, 31, 0.12)";
+      context.fillStyle = surface;
+      context.fillRect(0, 0, width, height);
+      context.strokeStyle = line;
       context.lineWidth = 1;
-      for (let index = 0; index <= 5; index += 1) {
-        const x = padding.left + (plotWidth * index) / 5;
+      context.font = "600 11px ui-monospace, SFMono-Regular, Menlo, monospace";
+      context.fillStyle = muted;
+      context.textBaseline = "middle";
+
+      const xLabelY = clamp(toY(0) + 16, padding.top + 14, height - padding.bottom + 20);
+      const yLabelX = clamp(toX(0) + 7, padding.left + 5, width - padding.right - 38);
+      const firstX = Math.ceil(xMin / xStep) * xStep;
+      for (let value = firstX; value <= xMax + xStep / 2; value += xStep) {
+        const x = toX(value);
         context.beginPath(); context.moveTo(x, padding.top); context.lineTo(x, padding.top + plotHeight); context.stroke();
+        context.fillText(formatTick(value, xStep), x + 3, xLabelY);
       }
-      for (let index = 0; index <= 4; index += 1) {
-        const y = padding.top + (plotHeight * index) / 4;
+      const firstY = Math.ceil(yMin / yStep) * yStep;
+      for (let value = firstY; value <= yMax + yStep / 2; value += yStep) {
+        const y = toY(value);
         context.beginPath(); context.moveTo(padding.left, y); context.lineTo(padding.left + plotWidth, y); context.stroke();
+        context.fillText(formatTick(value, yStep), yLabelX, y - 9);
       }
 
-      const zeroY = padding.top + ((max - 0) / (max - min)) * plotHeight;
-      context.strokeStyle = "rgba(20, 32, 31, 0.55)";
-      context.beginPath(); context.moveTo(padding.left, zeroY); context.lineTo(padding.left + plotWidth, zeroY); context.stroke();
+      context.strokeStyle = ink;
+      context.lineWidth = 1.5;
+      if (xMin <= 0 && xMax >= 0) {
+        const zeroX = toX(0);
+        context.beginPath(); context.moveTo(zeroX, padding.top); context.lineTo(zeroX, padding.top + plotHeight); context.stroke();
+      }
+      if (yMin <= 0 && yMax >= 0) {
+        const zeroY = toY(0);
+        context.beginPath(); context.moveTo(padding.left, zeroY); context.lineTo(padding.left + plotWidth, zeroY); context.stroke();
+      }
 
-      context.strokeStyle = "#ed5a32";
+      context.save();
+      context.beginPath();
+      context.rect(padding.left, padding.top, plotWidth, plotHeight);
+      context.clip();
+      context.strokeStyle = orange;
       context.lineWidth = 3;
       context.lineJoin = "round";
       context.beginPath();
       visibleSamples.forEach((sample, index) => {
-        const x = padding.left + (sample.time / duration) * plotWidth;
-        const y = padding.top + ((max - sample.value) / (max - min)) * plotHeight;
+        const x = toX(sample.time);
+        const y = toY(sample.value);
         if (index === 0) context.moveTo(x, y); else context.lineTo(x, y);
       });
       context.stroke();
 
       const currentPoint = visibleSamples.at(-1);
       if (currentPoint) {
-        const pointX = padding.left + (currentPoint.time / duration) * plotWidth;
-        const pointY = padding.top + ((max - currentPoint.value) / (max - min)) * plotHeight;
-        context.fillStyle = "#ed5a32";
+        const pointX = toX(currentPoint.time);
+        const pointY = toY(currentPoint.value);
+        context.fillStyle = orange;
         context.beginPath(); context.arc(pointX, pointY, 4, 0, Math.PI * 2); context.fill();
       }
 
-      const markerX = padding.left + (currentTime / duration) * plotWidth;
-      context.strokeStyle = "#1a4b43";
+      const markerX = toX(currentTime);
+      context.strokeStyle = green;
       context.lineWidth = 2;
       context.setLineDash([5, 5]);
       context.beginPath(); context.moveTo(markerX, padding.top); context.lineTo(markerX, padding.top + plotHeight); context.stroke();
       context.setLineDash([]);
+      context.restore();
 
-      context.fillStyle = "#14201f";
+      context.fillStyle = ink;
       context.font = "700 11px ui-monospace, SFMono-Regular, Menlo, monospace";
-      context.fillText(`${max.toFixed(1)}`, 10, padding.top + 4);
-      context.fillText(`${min.toFixed(1)}`, 10, padding.top + plotHeight);
-      context.fillText("0 s", padding.left, height - 12);
-      context.fillText(`${duration.toFixed(1)} s`, width - 62, height - 12);
+      context.textBaseline = "alphabetic";
+      context.fillText("time (s)", width - 78, height - 10);
+      context.save();
+      context.translate(14, 94);
+      context.rotate(-Math.PI / 2);
+      context.fillText(metric, 0, 0);
+      context.restore();
     };
 
     draw();
     const observer = new ResizeObserver(draw);
     observer.observe(canvas);
     return () => observer.disconnect();
-  }, [samples, metric, currentTime, duration]);
+  }, [samples, metric, currentTime, view]);
 
-  return <canvas ref={canvasRef} className="graph-canvas" role="img" aria-label={`${metric} versus time graph drawn through ${currentTime.toFixed(2)} seconds on a fixed full-experiment scale`} />;
+  const zoomGraph = (factor: number, xRatio = 0.5, yRatio = 0.5) => {
+    setView((current) => {
+      const nextXSpan = clamp(current.xSpan * factor, defaultView.xSpan * 0.04, defaultView.xSpan * 30);
+      const nextYSpan = clamp(current.ySpan * factor, defaultView.ySpan * 0.04, defaultView.ySpan * 30);
+      const focusX = current.xCenter + (xRatio - 0.5) * current.xSpan;
+      const focusY = current.yCenter + (0.5 - yRatio) * current.ySpan;
+      return {
+        xCenter: focusX - (xRatio - 0.5) * nextXSpan,
+        yCenter: focusY - (0.5 - yRatio) * nextYSpan,
+        xSpan: nextXSpan,
+        ySpan: nextYSpan,
+      };
+    });
+  };
+
+  const beginPan = (event: PointerEvent<HTMLCanvasElement>) => {
+    if (event.button !== 0) return;
+    panRef.current = {
+      pointerId: event.pointerId,
+      clientX: event.clientX,
+      clientY: event.clientY,
+      view,
+    };
+    setDragging(true);
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+
+  const panGraph = (event: PointerEvent<HTMLCanvasElement>) => {
+    const pan = panRef.current;
+    if (!pan || pan.pointerId !== event.pointerId) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    const plotWidth = Math.max(rect.width - 80, 1);
+    const plotHeight = Math.max(rect.height - 60, 1);
+    setView({
+      ...pan.view,
+      xCenter: pan.view.xCenter - ((event.clientX - pan.clientX) / plotWidth) * pan.view.xSpan,
+      yCenter: pan.view.yCenter + ((event.clientY - pan.clientY) / plotHeight) * pan.view.ySpan,
+    });
+  };
+
+  const endPan = (event: PointerEvent<HTMLCanvasElement>) => {
+    if (panRef.current?.pointerId !== event.pointerId) return;
+    panRef.current = null;
+    setDragging(false);
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+  };
+
+  const wheelZoom = (event: WheelEvent<HTMLCanvasElement>) => {
+    event.preventDefault();
+    const rect = event.currentTarget.getBoundingClientRect();
+    zoomGraph(
+      Math.exp(clamp(event.deltaY, -120, 120) * 0.0025),
+      clamp((event.clientX - rect.left) / rect.width, 0, 1),
+      clamp((event.clientY - rect.top) / rect.height, 0, 1),
+    );
+  };
+
+  return (
+    <>
+      <canvas
+        ref={canvasRef}
+        className={`graph-canvas ${dragging ? "dragging" : ""}`}
+        role="img"
+        tabIndex={0}
+        aria-label={`${metric} versus time interactive graph. Drag to pan, use the mouse wheel or buttons to zoom, and double click to reset.`}
+        onPointerDown={beginPan}
+        onPointerMove={panGraph}
+        onPointerUp={endPan}
+        onPointerCancel={endPan}
+        onWheel={wheelZoom}
+        onDoubleClick={() => setView(defaultView)}
+        onKeyDown={(event) => {
+          const direction = event.shiftKey ? 0.03 : 0.1;
+          if (event.key === "ArrowLeft") setView((current) => ({ ...current, xCenter: current.xCenter - current.xSpan * direction }));
+          else if (event.key === "ArrowRight") setView((current) => ({ ...current, xCenter: current.xCenter + current.xSpan * direction }));
+          else if (event.key === "ArrowUp") setView((current) => ({ ...current, yCenter: current.yCenter + current.ySpan * direction }));
+          else if (event.key === "ArrowDown") setView((current) => ({ ...current, yCenter: current.yCenter - current.ySpan * direction }));
+          else return;
+          event.preventDefault();
+        }}
+      />
+      <div className="graph-zoom-controls" aria-label="Graph zoom controls">
+        <button type="button" onClick={() => zoomGraph(0.75)} aria-label="Zoom graph in">＋</button>
+        <button type="button" onClick={() => zoomGraph(1 / 0.75)} aria-label="Zoom graph out">−</button>
+        <button type="button" onClick={() => setView(defaultView)} aria-label="Reset graph view">⌂</button>
+      </div>
+    </>
+  );
 }
 
 function Vector({ label, angle, tone = "green" }: { label: string; angle: number; tone?: "green" | "orange" | "blue" }) {
@@ -796,132 +928,6 @@ function StatsPanel({ scenario, frame }: { scenario: ScenarioId; frame: Frame })
   );
 }
 
-function getSnapshotMetrics(snapshot: LabSnapshot): SnapshotMetric[] {
-  const { frame, scenario } = snapshot;
-  return [
-    {
-      label: scenario === "projectile" ? "Horizontal position" : "Position",
-      value: scenario === "projectile" ? frame.positionX : frame.position,
-      unit: "m",
-    },
-    {
-      label: scenario === "projectile" ? "Speed" : "Velocity",
-      value: frame.velocity,
-      unit: "m/s",
-    },
-    {
-      label: "Acceleration",
-      value: frame.acceleration,
-      unit: "m/s²",
-    },
-    {
-      label: "Net force",
-      value: frame.netForce,
-      unit: "N",
-    },
-    {
-      label: "Total energy",
-      value: frame.totalEnergy,
-      unit: "J",
-    },
-  ];
-}
-
-function LabNotebook({
-  snapshots,
-  comparisonIds,
-  onRestore,
-  onRemove,
-  onToggleComparison,
-  onClear,
-}: {
-  snapshots: LabSnapshot[];
-  comparisonIds: string[];
-  onRestore: (snapshot: LabSnapshot) => void;
-  onRemove: (id: string) => void;
-  onToggleComparison: (id: string) => void;
-  onClear: () => void;
-}) {
-  const comparison = comparisonIds
-    .map((id) => snapshots.find((snapshot) => snapshot.id === id))
-    .filter((snapshot): snapshot is LabSnapshot => Boolean(snapshot));
-  const canCompare = comparison.length === 2 && comparison[0].scenario === comparison[1].scenario;
-  const firstMetrics = canCompare ? getSnapshotMetrics(comparison[0]) : [];
-  const secondMetrics = canCompare ? getSnapshotMetrics(comparison[1]) : [];
-
-  return (
-    <section className="lab-notebook" id="notebook" aria-labelledby="notebook-title">
-      <div className="notebook-heading">
-        <div>
-          <p className="eyebrow">Saved evidence / up to 6 moments</p>
-          <h2 id="notebook-title">Experiment notebook</h2>
-        </div>
-        <div className="notebook-actions">
-          <span>{snapshots.length} captured</span>
-          {snapshots.length > 0 && <button type="button" onClick={onClear}>Clear all</button>}
-        </div>
-      </div>
-
-      {snapshots.length === 0 ? (
-        <div className="notebook-empty">
-          <span aria-hidden="true">＋</span>
-          <div><strong>No moments captured yet.</strong><p>Pause anywhere—or scrub to an exact time—then use “Capture this moment” in the analysis panel.</p></div>
-        </div>
-      ) : (
-        <>
-          <div className="snapshot-grid">
-            {snapshots.map((snapshot, index) => {
-              const metrics = getSnapshotMetrics(snapshot);
-              const comparisonPosition = comparisonIds.indexOf(snapshot.id);
-              return (
-                <article className={`snapshot-card scenario-${snapshot.scenario}`} key={snapshot.id}>
-                  <div className="snapshot-card-head">
-                    <span>{snapshot.scenarioName}</span>
-                    <button type="button" onClick={() => onRemove(snapshot.id)} aria-label={`Remove snapshot at ${snapshot.time.toFixed(2)} seconds`}>×</button>
-                  </div>
-                  <button className="snapshot-jump" type="button" onClick={() => onRestore(snapshot)}>
-                    <small>Moment {snapshots.length - index}</small>
-                    <strong>{snapshot.time.toFixed(2)}<em>s</em></strong>
-                    <span>Jump to this moment →</span>
-                  </button>
-                  <dl className="snapshot-values">
-                    {metrics.slice(0, 3).map((metric) => <div key={metric.label}><dt>{metric.label}</dt><dd>{formatValue(metric.value, metric.unit, true)}</dd></div>)}
-                  </dl>
-                  <div className="snapshot-card-foot">
-                    <span>{snapshot.scenario === "pulley" || snapshot.scenario === "collision" ? `Object ${snapshot.trackedObject}` : "Tracked object"}</span>
-                    <button type="button" className={comparisonPosition >= 0 ? "selected" : ""} onClick={() => onToggleComparison(snapshot.id)} aria-pressed={comparisonPosition >= 0}>
-                      {comparisonPosition >= 0 ? `Compare ${comparisonPosition + 1}` : "Compare"}
-                    </button>
-                  </div>
-                </article>
-              );
-            })}
-          </div>
-
-          <div className={`comparison-panel ${canCompare ? "ready" : "waiting"}`}>
-            <div className="comparison-intro">
-              <span>Compare two moments</span>
-              {canCompare ? (
-                <><strong>{comparison[0].time.toFixed(2)}s → {comparison[1].time.toFixed(2)}s</strong><p>Change shown as Moment 2 minus Moment 1.</p></>
-              ) : (
-                <><strong>Select {comparison.length === 0 ? "two snapshots" : "one more snapshot"}</strong><p>Choose snapshots from the same experiment to reveal how its values changed.</p></>
-              )}
-            </div>
-            {canCompare && (
-              <dl className="comparison-values">
-                <div><dt>Elapsed time</dt><dd>{formatValue(comparison[1].time - comparison[0].time, "s", true)}</dd></div>
-                {firstMetrics.map((metric, index) => (
-                  <div key={metric.label}><dt>Δ {metric.label}</dt><dd>{formatValue(secondMetrics[index].value - metric.value, metric.unit, true)}</dd></div>
-                ))}
-              </dl>
-            )}
-          </div>
-        </>
-      )}
-    </section>
-  );
-}
-
 export default function Home() {
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("guided");
   const [scenario, setScenario] = useState<ScenarioId>("projectile");
@@ -933,11 +939,7 @@ export default function Home() {
   const [graphMetric, setGraphMetric] = useState<GraphMetric>("position");
   const [time, setTime] = useState(0);
   const [playbackSpeed, setPlaybackSpeed] = useState(0.5);
-  const [snapshots, setSnapshots] = useState<LabSnapshot[]>([]);
-  const [comparisonIds, setComparisonIds] = useState<string[]>([]);
-  const [announcement, setAnnouncement] = useState("Experiment ready.");
   const lastFrameRef = useRef<number | null>(null);
-  const snapshotCounterRef = useRef(1);
 
   const definition = SCENARIOS.find((item) => item.id === scenario) ?? SCENARIOS[0];
   const duration = useMemo(() => getDuration(scenario, values), [scenario, values]);
@@ -1008,59 +1010,6 @@ export default function Home() {
     setRunState(nextTime >= duration ? "complete" : "paused");
   };
 
-  const captureSnapshot = () => {
-    const snapshot: LabSnapshot = {
-      id: `snapshot-${snapshotCounterRef.current}`,
-      scenario,
-      scenarioName: definition.name,
-      time,
-      trackedObject,
-      values: { ...values },
-      collisionMode,
-      frame: { ...frame },
-    };
-    snapshotCounterRef.current += 1;
-    const previousSameScenario = snapshots.slice(0, 5).find((item) => item.scenario === scenario);
-    setSnapshots((current) => [snapshot, ...current].slice(0, 6));
-    setComparisonIds(previousSameScenario ? [previousSameScenario.id, snapshot.id] : [snapshot.id]);
-    setRunState("paused");
-    setAnnouncement(`${definition.name} moment captured at ${time.toFixed(2)} seconds.`);
-  };
-
-  const restoreSnapshot = (snapshot: LabSnapshot) => {
-    setScenario(snapshot.scenario);
-    setValues({ ...snapshot.values });
-    setCollisionModeState(snapshot.collisionMode);
-    setTrackedObject(snapshot.trackedObject);
-    setTime(snapshot.time);
-    setRunState("paused");
-    setViewMode("motion");
-    setAnnouncement(`${snapshot.scenarioName} restored at ${snapshot.time.toFixed(2)} seconds.`);
-    document.getElementById("lab")?.scrollIntoView({ behavior: "smooth", block: "start" });
-  };
-
-  const removeSnapshot = (id: string) => {
-    setSnapshots((current) => current.filter((snapshot) => snapshot.id !== id));
-    setComparisonIds((current) => current.filter((snapshotId) => snapshotId !== id));
-    setAnnouncement("Snapshot removed from the notebook.");
-  };
-
-  const toggleComparison = (id: string) => {
-    const selectedSnapshot = snapshots.find((snapshot) => snapshot.id === id);
-    if (!selectedSnapshot) return;
-    setComparisonIds((current) => {
-      if (current.includes(id)) return current.filter((snapshotId) => snapshotId !== id);
-      const sameScenario = current.filter((snapshotId) => snapshots.find((snapshot) => snapshot.id === snapshotId)?.scenario === selectedSnapshot.scenario);
-      return [...sameScenario.slice(-1), id];
-    });
-  };
-
-  const clearSnapshots = () => {
-    setSnapshots([]);
-    setComparisonIds([]);
-    setAnnouncement("All notebook snapshots cleared.");
-  };
-
   return (
     <main className="app-shell">
       <header className="topbar">
@@ -1073,10 +1022,10 @@ export default function Home() {
 
       <section className="hero">
         <div>
-          <p className="eyebrow">Interactive physics workspace / prototype 02</p>
-          <h1>See the forces<br /><em>behind the motion.</em></h1>
+          <p className="eyebrow">Interactive physics workspace / prototype 03</p>
+          <h1>Build the motion.<br /><em>Read every change.</em></h1>
         </div>
-        <p>Build a scenario, run time forward, and capture exact moments to compare the motion with forces, energy, and graphs.</p>
+        <p>Create a scenario, run time forward, and inspect its motion, energy, forces, and interactive graphs at any instant.</p>
       </section>
 
       <div className="workspace-mode" id="workspace" role="group" aria-label="Workspace mode">
@@ -1094,7 +1043,7 @@ export default function Home() {
             ))}
           </nav>
 
-          <section className="lab" id="lab">
+          <section className={`lab ${viewMode === "graphs" ? "graph-mode" : ""}`} id="lab">
         <aside className="setup-panel">
           <div className="section-heading"><span>Experiment setup</span><strong>{definition.number}</strong></div>
           <h2>{definition.name}</h2>
@@ -1122,7 +1071,7 @@ export default function Home() {
                 <div>
                   <span>Live graph</span>
                   <strong>{graphMetric} / time</strong>
-                  <small>Fixed full-run scale · {Math.round((time / duration) * 100)}% drawn</small>
+                  <small>Drag to pan · wheel to zoom · drag the lower edge to resize</small>
                 </div>
                 <div className="metric-tabs" role="group" aria-label="Graph quantity">
                   {(["position", "velocity", "acceleration"] as GraphMetric[]).map((metric) => (
@@ -1130,7 +1079,7 @@ export default function Home() {
                   ))}
                 </div>
               </div>
-              <GraphCanvas samples={samples} metric={graphMetric} currentTime={time} duration={duration} />
+              <GraphCanvas key={`${scenario}-${graphMetric}-${duration.toFixed(4)}`} samples={samples} metric={graphMetric} currentTime={time} duration={duration} />
               <div className="graph-legend"><span><i /> revealed motion</span><span><i /> current moment</span></div>
             </div>
           )}
@@ -1142,30 +1091,28 @@ export default function Home() {
               <button className="step-button" type="button" onClick={() => scrub(clamp(time - duration / 100, 0, duration))} aria-label="Step backward">−1</button>
               <button className="play-button" type="button" onClick={togglePlayback}>{runState === "running" ? "Ⅱ Pause" : runState === "paused" ? "▶ Resume" : "▶ Run experiment"}</button>
               <button className="step-button" type="button" onClick={() => scrub(clamp(time + duration / 100, 0, duration))} aria-label="Step forward">+1</button>
-              <label className="speed-select">Speed<select value={playbackSpeed} onChange={(event) => setPlaybackSpeed(Number(event.target.value))}><option value={0.5}>0.5×</option><option value={1}>1×</option><option value={2}>2×</option></select></label>
+              <div className="speed-buttons" role="group" aria-label="Playback speed">
+                <span>Speed</span>
+                {[0.5, 1, 2].map((speed) => <button key={speed} type="button" className={playbackSpeed === speed ? "active" : ""} onClick={() => setPlaybackSpeed(speed)} aria-pressed={playbackSpeed === speed}>{speed}×</button>)}
+              </div>
             </div>
           </div>
           <p className="principle-note"><span>What to notice</span>{definition.principle}</p>
         </section>
 
         <aside className="analysis-panel">
-          <div className="section-heading"><span>Snapshot analysis</span><strong>{time.toFixed(2)}s</strong></div>
+          <div className="section-heading"><span>Live analysis</span><strong>{time.toFixed(2)}s</strong></div>
           {(scenario === "pulley" || scenario === "collision") && (
             <div className="object-toggle" role="group" aria-label="Tracked object">
               {(["A", "B"] as TrackedObject[]).map((object) => <button key={object} type="button" className={trackedObject === object ? "active" : ""} onClick={() => setTrackedObject(object)}>Object {object}</button>)}
             </div>
           )}
           <StatsPanel scenario={scenario} frame={frame} />
-          <button className="capture-button" type="button" onClick={captureSnapshot}>
-            <span aria-hidden="true">＋</span>
-            <span><strong>Capture this moment</strong><small>Save values at {time.toFixed(2)} s</small></span>
-          </button>
           <div className="fbd-heading"><span>Free-body diagram</span><small>{runState === "running" ? "Pause to inspect" : "Live snapshot"}</small></div>
           <ForceDiagram scenario={scenario} values={values} frame={frame} trackedObject={trackedObject} time={time} />
         </aside>
           </section>
 
-          <LabNotebook snapshots={snapshots} comparisonIds={comparisonIds} onRestore={restoreSnapshot} onRemove={removeSnapshot} onToggleComparison={toggleComparison} onClear={clearSnapshots} />
         </>
       ) : (
         <SandboxLab />
@@ -1176,7 +1123,7 @@ export default function Home() {
         <p>Idealized AP Physics 1 models · no air resistance unless specified</p>
         <span>5 EXPERIMENTS + 1 SANDBOX</span>
       </footer>
-      <p className="sr-only" aria-live="polite">{announcement} Simulation {runState} at {time.toFixed(2)} seconds.</p>
+      <p className="sr-only" aria-live="polite">Simulation {runState} at {time.toFixed(2)} seconds.</p>
     </main>
   );
 }

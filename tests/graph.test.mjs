@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { getFixedGraphScale, revealGraphSamples } from "../app/graph.mjs";
+import { getFixedGraphScale, getGraphGridStep, revealGraphSamples } from "../app/graph.mjs";
 
 const samples = [
   { time: 0, position: 0, velocity: 0, acceleration: 10 },
@@ -29,4 +29,11 @@ test("graph scale is based on the full experiment, not revealed progress", () =>
 
 test("constant data still receives a stable visible range", () => {
   assert.deepEqual(getFixedGraphScale(samples, "acceleration"), { min: -1.2, max: 11.2 });
+});
+
+test("interactive graph grids choose readable one-two-five intervals", () => {
+  assert.equal(getGraphGridStep(9), 1);
+  assert.equal(getGraphGridStep(28), 5);
+  assert.equal(getGraphGridStep(0.8), 0.1);
+  assert.equal(getGraphGridStep(120), 20);
 });

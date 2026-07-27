@@ -34,3 +34,12 @@ export function revealGraphSamples(samples, metric, currentTime) {
 
   return revealed;
 }
+
+export function getGraphGridStep(span, targetLines = 10) {
+  const safeSpan = Math.max(Math.abs(span), Number.EPSILON);
+  const roughStep = safeSpan / Math.max(targetLines, 2);
+  const power = 10 ** Math.floor(Math.log10(roughStep));
+  const normalized = roughStep / power;
+  const multiplier = normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10;
+  return multiplier * power;
+}
