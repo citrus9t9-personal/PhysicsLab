@@ -2,9 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  CANVAS_PIXELS_PER_UNIT,
   GRID_STEP,
   GROUND_Y,
+  SANDBOX_WORLD_HEIGHT,
+  SANDBOX_WORLD_WIDTH,
   SANDBOX_TOOLS,
+  clampItemToWorkspace,
   collisionManifold,
   createSandboxItem,
   findSnapPlacement,
@@ -26,6 +30,9 @@ test("sandbox exposes every requested object and connector", () => {
 
 test("the click grid rounds placement and resize coordinates consistently", () => {
   assert.equal(GRID_STEP, 5);
+  assert.equal(SANDBOX_WORLD_WIDTH, 500);
+  assert.equal(SANDBOX_WORLD_HEIGHT, 500);
+  assert.equal(CANVAS_PIXELS_PER_UNIT, 6);
   assert.equal(snapToGrid(12), 10);
   assert.equal(snapToGrid(13), 15);
   assert.equal(snapToGrid(31, 10), 30);
@@ -184,6 +191,43 @@ test("nearby objects snap to the exact surface of another hitbox", () => {
   assert.equal(snap.persistent, false);
   assert.ok(Math.abs(snap.normal.y + 1) < 1e-9);
   assert.equal(collisionManifold(placed, platform), null);
+  const pressedIntoSurface = {
+    ...placed,
+    x: placed.x - snap.normal.x * 0.01,
+    y: placed.y - snap.normal.y * 0.01,
+  };
+  assert.ok(collisionManifold(pressedIntoSurface, platform));
+});
+
+test("workspace bounds place visible hitboxes exactly against the ground", () => {
+  const ball = createSandboxItem("ball", "ball", SANDBOX_WORLD_WIDTH / 2, GROUND_Y);
+  const placed = clampItemToWorkspace(ball);
+  const hitbox = getItemHitbox(placed);
+
+  assert.equal(hitbox.y + hitbox.radius, GROUND_Y);
+  assert.ok(placed.x > 0 && placed.x < SANDBOX_WORLD_WIDTH);
+});
+
+test("circle and rotated-surface snaps also stop at exact hitbox contact", () => {
+  const pulley = createSandboxItem("pulley", "pulley", 100, 100);
+  const block = createSandboxItem("block", "block", 112, 100);
+  const blockSnap = findSnapPlacement(block, [pulley]);
+  const placedBlock = { ...block, x: blockSnap.x, y: blockSnap.y };
+  assert.equal(collisionManifold(placedBlock, pulley), null);
+  assert.ok(collisionManifold({ ...placedBlock, x: placedBlock.x - 0.01 }, pulley));
+
+  const platform = createSandboxItem("platform", "platform", 200, 200);
+  platform.angle = 30;
+  const normal = { x: 0.5, y: -Math.sqrt(3) / 2 };
+  const ball = createSandboxItem("ball", "ball", 200 + normal.x * 10, 200 + normal.y * 10);
+  const ballSnap = findSnapPlacement(ball, [platform]);
+  const placedBall = { ...ball, x: ballSnap.x, y: ballSnap.y };
+  assert.equal(collisionManifold(placedBall, platform), null);
+  assert.ok(collisionManifold({
+    ...placedBall,
+    x: placedBall.x - ballSnap.normal.x * 0.01,
+    y: placedBall.y - ballSnap.normal.y * 0.01,
+  }, platform));
 });
 
 test("fixed structures receive persistent snaps while dynamic bodies remain temporary", () => {

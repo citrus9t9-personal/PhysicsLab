@@ -1,6 +1,9 @@
 export const WORLD_SCALE = 7;
 export const GRID_STEP = 5;
-export const GROUND_Y = 90;
+export const SANDBOX_WORLD_WIDTH = 500;
+export const SANDBOX_WORLD_HEIGHT = 500;
+export const CANVAS_PIXELS_PER_UNIT = 6;
+export const GROUND_Y = 480;
 
 export const SANDBOX_TOOLS = [
   { type: "block", label: "Block", category: "Objects", description: "Adjustable mass, size, velocity, and friction." },
@@ -20,6 +23,7 @@ export const SANDBOX_TOOLS = [
 const DYNAMIC_TYPES = new Set(["block", "ball", "cart", "rod", "wheel"]);
 const STATIC_COLLIDER_TYPES = new Set(["platform", "incline", "pulley", "pendulum"]);
 const TAU = Math.PI * 2;
+const CONTACT_EPSILON = 1e-9;
 
 const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
 const radians = (degrees) => (degrees * Math.PI) / 180;
@@ -54,7 +58,7 @@ export function snapToGrid(value, step = GRID_STEP) {
   return Math.round(value / step) * step;
 }
 
-export function createSandboxItem(type, id, x = 50, y = 35) {
+export function createSandboxItem(type, id, x = SANDBOX_WORLD_WIDTH / 2, y = GROUND_Y - 80) {
   const definition = SANDBOX_TOOLS.find((tool) => tool.type === type);
   if (!definition || type === "rope" || type === "spring") {
     throw new TypeError(`Unknown placeable sandbox item: ${type}`);
@@ -112,11 +116,11 @@ export function createSandboxItem(type, id, x = 50, y = 35) {
 
 export function createStarterSandbox() {
   return [
-    createSandboxItem("gravity-region", "starter-gravity", 51, 45),
-    createSandboxItem("platform", "starter-platform", 50, 82),
-    createSandboxItem("incline", "starter-incline", 73, 65),
-    createSandboxItem("block", "starter-block", 28, 28),
-    createSandboxItem("ball", "starter-ball", 46, 27),
+    createSandboxItem("gravity-region", "starter-gravity", 251, 430),
+    createSandboxItem("platform", "starter-platform", 250, 462),
+    createSandboxItem("incline", "starter-incline", 273, 445),
+    createSandboxItem("block", "starter-block", 228, 408),
+    createSandboxItem("ball", "starter-ball", 246, 407),
   ];
 }
 
@@ -189,11 +193,43 @@ function projectionRadius(box, axis) {
   return box.halfWidth * Math.abs(dot(horizontal, axis)) + box.halfHeight * Math.abs(dot(vertical, axis));
 }
 
+export function getItemBounds(item) {
+  return getItemHitboxes(item).reduce((bounds, shape) => {
+    const extentX = shape.kind === "circle" ? shape.radius : projectionRadius(shape, { x: 1, y: 0 });
+    const extentY = shape.kind === "circle" ? shape.radius : projectionRadius(shape, { x: 0, y: 1 });
+    return {
+      left: Math.min(bounds.left, shape.x - extentX),
+      right: Math.max(bounds.right, shape.x + extentX),
+      top: Math.min(bounds.top, shape.y - extentY),
+      bottom: Math.max(bounds.bottom, shape.y + extentY),
+    };
+  }, { left: Infinity, right: -Infinity, top: Infinity, bottom: -Infinity });
+}
+
+export function clampItemToWorkspace(item) {
+  const next = { ...item };
+  const bounds = getItemBounds(next);
+  if (bounds.left < 0) next.x -= bounds.left;
+  if (bounds.right > SANDBOX_WORLD_WIDTH) next.x -= bounds.right - SANDBOX_WORLD_WIDTH;
+  if (bounds.top < 0) next.y -= bounds.top;
+  if (bounds.bottom > GROUND_Y) next.y -= bounds.bottom - GROUND_Y;
+  return next;
+}
+
+function placementFitsWorkspace(item) {
+  const bounds = getItemBounds(item);
+  const epsilon = 0.000001;
+  return bounds.left >= -epsilon &&
+    bounds.right <= SANDBOX_WORLD_WIDTH + epsilon &&
+    bounds.top >= -epsilon &&
+    bounds.bottom <= GROUND_Y + epsilon;
+}
+
 function circleCircleManifold(a, b) {
   const offset = { x: b.x - a.x, y: b.y - a.y };
   const centerDistance = Math.hypot(offset.x, offset.y);
   const overlap = a.radius + b.radius - centerDistance;
-  if (overlap <= 0) return null;
+  if (overlap <= CONTACT_EPSILON) return null;
   return {
     normal: centerDistance > 0.000001 ? { x: offset.x / centerDistance, y: offset.y / centerDistance } : { x: 1, y: 0 },
     penetration: overlap,
@@ -211,7 +247,7 @@ function circleBoxManifold(circle, box) {
 
   if (separation > 0.000001) {
     const penetration = circle.radius - separation;
-    if (penetration <= 0) return null;
+    if (penetration <= CONTACT_EPSILON) return null;
     return {
       normal: rotate({ x: localOffset.x / separation, y: localOffset.y / separation }, box.angle),
       penetration,
@@ -237,7 +273,7 @@ function boxBoxManifold(a, b) {
   for (const axis of axes) {
     const signedDistance = dot(centerOffset, axis);
     const overlap = projectionRadius(a, axis) + projectionRadius(b, axis) - Math.abs(signedDistance);
-    if (overlap <= 0) return null;
+    if (overlap <= CONTACT_EPSILON) return null;
     if (!shallowest || overlap < shallowest.penetration) {
       shallowest = {
         normal: signedDistance >= 0 ? axis : { x: -axis.x, y: -axis.y },
@@ -260,12 +296,6 @@ export function collisionManifold(first, second) {
       : null;
   }
   return boxBoxManifold(a, b);
-}
-
-function shapeExtent(item, axis) {
-  const shape = getItemHitbox(item);
-  if (shape.kind === "circle") return shape.radius;
-  return projectionRadius(shape, axis);
 }
 
 function shapeSupport(shape, axis) {
@@ -334,24 +364,35 @@ function snapToBox(item, draggedShape, targetShape) {
 }
 
 export function findSnapPlacement(item, items, threshold = 4.2) {
-  const draggedShape = getItemHitbox(item);
+  const draggedShapes = getItemHitboxes(item);
   let best = null;
   for (const target of items) {
     if (target.id === item.id || target.type === "gravity-region") continue;
-    for (const targetShape of getItemHitboxes(target)) {
-      const candidate = targetShape.kind === "circle"
-        ? snapToCircle(item, draggedShape, targetShape)
-        : snapToBox(item, draggedShape, targetShape);
-      if (candidate.distance > threshold) continue;
-      const score = candidate.distance + (isDynamicItem(target) ? 0.35 : 0);
-      if (!best || score < best.score) {
-        best = {
-          ...candidate,
-          score,
-          targetId: target.id,
-          targetLabel: target.label,
-          persistent: isFixedItem(item),
-        };
+    const targetShapes = getItemHitboxes(target);
+    for (const draggedShape of draggedShapes) {
+      for (const targetShape of targetShapes) {
+        const candidate = targetShape.kind === "circle"
+          ? snapToCircle(item, draggedShape, targetShape)
+          : snapToBox(item, draggedShape, targetShape);
+        if (candidate.distance > threshold) continue;
+
+        const placedItem = { ...item, x: candidate.x, y: candidate.y };
+        if (!placementFitsWorkspace(placedItem)) continue;
+        const placedShapes = getItemHitboxes(placedItem);
+        const overlapsTarget = placedShapes.some((placedShape) =>
+          targetShapes.some((shape) => collisionManifold(placedShape, shape)?.penetration > 0.000001));
+        if (overlapsTarget) continue;
+
+        const score = candidate.distance + (isDynamicItem(target) ? 0.35 : 0);
+        if (!best || score < best.score) {
+          best = {
+            ...candidate,
+            score,
+            targetId: target.id,
+            targetLabel: target.label,
+            persistent: isFixedItem(item),
+          };
+        }
       }
     }
   }
@@ -676,13 +717,12 @@ function solveBodyCollisions(items) {
 }
 
 function keepInsideStage(item) {
-  const horizontal = shapeExtent(item, { x: 1, y: 0 });
-  const vertical = shapeExtent(item, { x: 0, y: 1 });
-  if (item.x < horizontal) { item.x = horizontal; item.vx = Math.abs(item.vx); }
-  if (item.x > 100 - horizontal) { item.x = 100 - horizontal; item.vx = -Math.abs(item.vx); }
-  if (item.y < vertical) { item.y = vertical; item.vy = Math.abs(item.vy); }
-  if (item.y > GROUND_Y - vertical) {
-    item.y = GROUND_Y - vertical;
+  const bounds = getItemBounds(item);
+  if (bounds.left < 0) { item.x -= bounds.left; item.vx = Math.abs(item.vx); }
+  if (bounds.right > SANDBOX_WORLD_WIDTH) { item.x -= bounds.right - SANDBOX_WORLD_WIDTH; item.vx = -Math.abs(item.vx); }
+  if (bounds.top < 0) { item.y -= bounds.top; item.vy = Math.abs(item.vy); }
+  if (bounds.bottom > GROUND_Y) {
+    item.y -= bounds.bottom - GROUND_Y;
     item.vy = -Math.abs(item.vy);
   }
 }

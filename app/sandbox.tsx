@@ -8,13 +8,18 @@ import {
   type CSSProperties,
   type DragEvent,
   type PointerEvent,
+  type WheelEvent,
 } from "react";
 
 import {
+  CANVAS_PIXELS_PER_UNIT,
   GRID_STEP,
   GROUND_Y,
+  SANDBOX_WORLD_HEIGHT,
+  SANDBOX_WORLD_WIDTH,
   SANDBOX_TOOLS,
   WORLD_SCALE,
+  clampItemToWorkspace,
   createSandboxItem,
   createStarterSandbox,
   findSnapPlacement,
@@ -26,6 +31,12 @@ import {
   snapToGrid,
   stepSandbox,
 } from "./sandbox-physics.mjs";
+import {
+  cameraForZoomAtPoint,
+  clampSandboxZoom,
+  constrainSandboxCamera,
+  screenPointToWorld,
+} from "./sandbox-camera.mjs";
 
 type ConnectorType = "rope" | "spring";
 
@@ -101,6 +112,7 @@ const ICONS: Record<string, string> = {
 };
 
 const CATEGORIES = ["Objects", "Structures", "Fields", "Connections"];
+const DEFAULT_SANDBOX_ZOOM = 0.75;
 
 const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
 
@@ -133,24 +145,33 @@ function NumberControl({
 function entityDimensions(item: SandboxItem) {
   if (item.type === "platform") {
     return {
-      width: `${clamp((item.width ?? item.size) * WORLD_SCALE, GRID_STEP, 80)}%`,
-      height: `${clamp((item.height ?? 1) * WORLD_SCALE, GRID_STEP, 40)}%`,
+      width: `${Math.max((item.width ?? item.size) * WORLD_SCALE * CANVAS_PIXELS_PER_UNIT, GRID_STEP * CANVAS_PIXELS_PER_UNIT)}px`,
+      height: `${Math.max((item.height ?? 1) * WORLD_SCALE * CANVAS_PIXELS_PER_UNIT, GRID_STEP * CANVAS_PIXELS_PER_UNIT)}px`,
     };
   }
   if (item.type === "incline") {
-    const width = clamp(item.size * WORLD_SCALE, GRID_STEP, 80);
-    const height = clamp(Math.tan((Math.abs(item.angle) * Math.PI) / 180) * item.size * 42, 32, 260);
-    return { width: `${width}%`, height: `${height}px` };
+    const width = Math.max(item.size * WORLD_SCALE * CANVAS_PIXELS_PER_UNIT, GRID_STEP * CANVAS_PIXELS_PER_UNIT);
+    const height = Math.max(Math.tan((Math.abs(item.angle) * Math.PI) / 180) * width, 18);
+    return { width: `${width}px`, height: `${height}px` };
   }
-  if (item.type === "rod") return { width: `${clamp(item.size * WORLD_SCALE, GRID_STEP, 80)}%`, height: "24px" };
-  if (item.type === "gravity-region") {
+  if (item.type === "rod") {
     return {
-      width: `${clamp((item.width ?? item.size) * WORLD_SCALE, GRID_STEP, 90)}%`,
-      height: `${clamp((item.height ?? item.size) * WORLD_SCALE, GRID_STEP, 85)}%`,
+      width: `${Math.max(item.size * WORLD_SCALE * CANVAS_PIXELS_PER_UNIT, GRID_STEP * CANVAS_PIXELS_PER_UNIT)}px`,
+      height: `${WORLD_SCALE * 0.36 * CANVAS_PIXELS_PER_UNIT}px`,
     };
   }
-  if (item.type === "pendulum") return { width: "120px", height: `${clamp(item.length * 40, 100, 230)}px` };
-  const size = clamp(item.size * 42, 42, 104);
+  if (item.type === "gravity-region") {
+    return {
+      width: `${Math.max((item.width ?? item.size) * WORLD_SCALE * CANVAS_PIXELS_PER_UNIT, GRID_STEP * CANVAS_PIXELS_PER_UNIT)}px`,
+      height: `${Math.max((item.height ?? item.size) * WORLD_SCALE * CANVAS_PIXELS_PER_UNIT, GRID_STEP * CANVAS_PIXELS_PER_UNIT)}px`,
+    };
+  }
+  if (item.type === "pendulum") {
+    const bob = Math.max(item.size * WORLD_SCALE * CANVAS_PIXELS_PER_UNIT, 28);
+    const arm = Math.max(item.length * WORLD_SCALE * CANVAS_PIXELS_PER_UNIT, 42);
+    return { width: `${bob}px`, height: `${arm + bob / 2}px` };
+  }
+  const size = Math.max(item.size * WORLD_SCALE * CANVAS_PIXELS_PER_UNIT, 28);
   return { width: `${size}px`, height: `${item.type === "cart" ? size * 0.62 : size}px` };
 }
 
@@ -164,9 +185,9 @@ function linkStyle(a: SandboxItem, b: SandboxItem) {
   const dx = b.x - a.x;
   const dy = b.y - a.y;
   return {
-    left: `${a.x}%`,
-    top: `${a.y}%`,
-    width: `${Math.hypot(dx, dy)}%`,
+    left: `${a.x * CANVAS_PIXELS_PER_UNIT}px`,
+    top: `${a.y * CANVAS_PIXELS_PER_UNIT}px`,
+    width: `${Math.hypot(dx, dy) * CANVAS_PIXELS_PER_UNIT}px`,
     transform: `translateY(-50%) rotate(${Math.atan2(dy, dx)}rad)`,
   } as CSSProperties;
 }
@@ -209,7 +230,9 @@ export default function SandboxLab() {
   const [snapGuide, setSnapGuide] = useState<SnapGuide | null>(null);
   const [running, setRunning] = useState(false);
   const [playbackSpeed, setPlaybackSpeed] = useState(1);
-  const [zoom, setZoom] = useState(1);
+  const [zoom, setZoom] = useState(DEFAULT_SANDBOX_ZOOM);
+  const [camera, setCamera] = useState({ x: 0, y: 0 });
+  const [isPanning, setIsPanning] = useState(false);
   const stageRef = useRef<HTMLDivElement>(null);
   const counterRef = useRef(1);
   const lastFrameRef = useRef<number | null>(null);
@@ -221,10 +244,47 @@ export default function SandboxLab() {
   } | null>(null);
   const connectorClickRef = useRef<string | null>(null);
   const itemsRef = useRef(items);
+  const zoomRef = useRef(DEFAULT_SANDBOX_ZOOM);
+  const cameraRef = useRef({ x: 0, y: 0 });
+  const didCenterCameraRef = useRef(false);
+  const activePointersRef = useRef(new Map<number, { x: number; y: number }>());
+  const panGestureRef = useRef<{
+    pointerId: number;
+    startX: number;
+    startY: number;
+    cameraX: number;
+    cameraY: number;
+  } | null>(null);
+  const pinchGestureRef = useRef<{
+    distance: number;
+    zoom: number;
+    worldX: number;
+    worldY: number;
+  } | null>(null);
 
   useEffect(() => {
     itemsRef.current = items;
   }, [items]);
+
+  useEffect(() => {
+    if (didCenterCameraRef.current || !stageRef.current) return;
+    const rect = stageRef.current.getBoundingClientRect();
+    const next = constrainSandboxCamera(
+      {
+        x: rect.width / 2 - (SANDBOX_WORLD_WIDTH / 2) * CANVAS_PIXELS_PER_UNIT * DEFAULT_SANDBOX_ZOOM,
+        y: rect.height / 2 - (GROUND_Y - 55) * CANVAS_PIXELS_PER_UNIT * DEFAULT_SANDBOX_ZOOM,
+      },
+      { width: rect.width, height: rect.height },
+      {
+        width: SANDBOX_WORLD_WIDTH * CANVAS_PIXELS_PER_UNIT,
+        height: SANDBOX_WORLD_HEIGHT * CANVAS_PIXELS_PER_UNIT,
+      },
+      DEFAULT_SANDBOX_ZOOM,
+    );
+    didCenterCameraRef.current = true;
+    cameraRef.current = next;
+    setCamera(next);
+  }, []);
 
   const selectedItem = items.find((item) => item.id === selectedItemId) ?? null;
   const selectedLink = links.find((link) => link.id === selectedLinkId) ?? null;
@@ -275,8 +335,8 @@ export default function SandboxLab() {
     const raw = createSandboxItem(
       type,
       `sandbox-${type}-${index}`,
-      snapToGrid(x ?? 40 + (index % 4) * GRID_STEP),
-      snapToGrid(y ?? 25 + (index % 3) * GRID_STEP),
+      snapToGrid(x ?? SANDBOX_WORLD_WIDTH / 2 - 15 + (index % 4) * GRID_STEP),
+      snapToGrid(y ?? GROUND_Y - 75 + (index % 3) * GRID_STEP),
     ) as SandboxItem;
     const snap = findSnapPlacement(raw, itemsRef.current);
     const persistent = Boolean(snap?.persistent);
@@ -302,12 +362,69 @@ export default function SandboxLab() {
     event.dataTransfer.effectAllowed = "copy";
   };
 
+  const applyCamera = (next: { x: number; y: number }, nextZoom = zoomRef.current) => {
+    const rect = stageRef.current?.getBoundingClientRect();
+    const constrained = rect
+      ? constrainSandboxCamera(
+          next,
+          { width: rect.width, height: rect.height },
+          {
+            width: SANDBOX_WORLD_WIDTH * CANVAS_PIXELS_PER_UNIT,
+            height: SANDBOX_WORLD_HEIGHT * CANVAS_PIXELS_PER_UNIT,
+          },
+          nextZoom,
+        )
+      : next;
+    cameraRef.current = constrained;
+    setCamera(constrained);
+  };
+
+  const centerCamera = (nextZoom = DEFAULT_SANDBOX_ZOOM) => {
+    const rect = stageRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const normalizedZoom = clampSandboxZoom(nextZoom);
+    zoomRef.current = normalizedZoom;
+    setZoom(normalizedZoom);
+    applyCamera({
+      x: rect.width / 2 - (SANDBOX_WORLD_WIDTH / 2) * CANVAS_PIXELS_PER_UNIT * normalizedZoom,
+      y: rect.height / 2 - (GROUND_Y - 55) * CANVAS_PIXELS_PER_UNIT * normalizedZoom,
+    }, normalizedZoom);
+  };
+
+  const zoomAtClientPoint = (clientX: number, clientY: number, nextZoom: number) => {
+    const rect = stageRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const point = { x: clientX - rect.left, y: clientY - rect.top };
+    const result = cameraForZoomAtPoint(
+      cameraRef.current,
+      zoomRef.current,
+      nextZoom,
+      point,
+      CANVAS_PIXELS_PER_UNIT,
+    );
+    zoomRef.current = result.zoom;
+    setZoom(result.zoom);
+    applyCamera(result.camera, result.zoom);
+  };
+
+  const nudgeZoom = (factor: number) => {
+    const rect = stageRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    zoomAtClientPoint(rect.left + rect.width / 2, rect.top + rect.height / 2, zoomRef.current * factor);
+  };
+
   const stageCoordinates = (clientX: number, clientY: number) => {
     const rect = stageRef.current?.getBoundingClientRect();
-    if (!rect) return { x: 50, y: 40 };
+    if (!rect) return { x: SANDBOX_WORLD_WIDTH / 2, y: GROUND_Y - 80 };
+    const point = screenPointToWorld(
+      { x: clientX - rect.left, y: clientY - rect.top },
+      cameraRef.current,
+      zoomRef.current,
+      CANVAS_PIXELS_PER_UNIT,
+    );
     return {
-      x: clamp(((clientX - rect.left) / rect.width) * 100, 2, 98),
-      y: clamp(((clientY - rect.top) / rect.height) * 100, 2, GROUND_Y),
+      x: clamp(point.x, 0, SANDBOX_WORLD_WIDTH),
+      y: clamp(point.y, 0, GROUND_Y),
     };
   };
 
@@ -317,6 +434,103 @@ export default function SandboxLab() {
     if (!type) return;
     const point = stageCoordinates(event.clientX, event.clientY);
     addTool(type, point.x, point.y);
+  };
+
+  const handleStagePointerDown = (event: PointerEvent<HTMLDivElement>) => {
+    const target = event.target as HTMLElement;
+    const blocksCamera = Boolean(target.closest(
+      ".sandbox-entity, .sandbox-rope, .sandbox-link, button, input, label",
+    ));
+
+    if (event.pointerType === "touch") {
+      activePointersRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+      if (activePointersRef.current.size >= 2) {
+        const rect = stageRef.current?.getBoundingClientRect();
+        const points = [...activePointersRef.current.values()].slice(0, 2);
+        if (!rect || points.length < 2) return;
+        dragRef.current = null;
+        resizeRef.current = null;
+        panGestureRef.current = null;
+        const center = {
+          x: (points[0].x + points[1].x) / 2 - rect.left,
+          y: (points[0].y + points[1].y) / 2 - rect.top,
+        };
+        const world = screenPointToWorld(
+          center,
+          cameraRef.current,
+          zoomRef.current,
+          CANVAS_PIXELS_PER_UNIT,
+        );
+        pinchGestureRef.current = {
+          distance: Math.max(Math.hypot(points[1].x - points[0].x, points[1].y - points[0].y), 1),
+          zoom: zoomRef.current,
+          worldX: world.x,
+          worldY: world.y,
+        };
+        setIsPanning(true);
+        event.currentTarget.setPointerCapture(event.pointerId);
+        return;
+      }
+    }
+
+    if (blocksCamera) return;
+    panGestureRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      cameraX: cameraRef.current.x,
+      cameraY: cameraRef.current.y,
+    };
+    setIsPanning(true);
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+
+  const handleStagePointerMove = (event: PointerEvent<HTMLDivElement>) => {
+    if (activePointersRef.current.has(event.pointerId)) {
+      activePointersRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    }
+
+    const pinch = pinchGestureRef.current;
+    if (pinch && activePointersRef.current.size >= 2) {
+      const rect = stageRef.current?.getBoundingClientRect();
+      const points = [...activePointersRef.current.values()].slice(0, 2);
+      if (!rect || points.length < 2) return;
+      const distance = Math.max(Math.hypot(points[1].x - points[0].x, points[1].y - points[0].y), 1);
+      const nextZoom = clampSandboxZoom(pinch.zoom * (distance / pinch.distance));
+      const center = {
+        x: (points[0].x + points[1].x) / 2 - rect.left,
+        y: (points[0].y + points[1].y) / 2 - rect.top,
+      };
+      zoomRef.current = nextZoom;
+      setZoom(nextZoom);
+      applyCamera({
+        x: center.x - pinch.worldX * CANVAS_PIXELS_PER_UNIT * nextZoom,
+        y: center.y - pinch.worldY * CANVAS_PIXELS_PER_UNIT * nextZoom,
+      }, nextZoom);
+      return;
+    }
+
+    const pan = panGestureRef.current;
+    if (!pan || pan.pointerId !== event.pointerId) return;
+    applyCamera({
+      x: pan.cameraX + event.clientX - pan.startX,
+      y: pan.cameraY + event.clientY - pan.startY,
+    });
+  };
+
+  const handleStagePointerEnd = (event: PointerEvent<HTMLDivElement>) => {
+    activePointersRef.current.delete(event.pointerId);
+    if (pinchGestureRef.current) {
+      if (activePointersRef.current.size < 2) pinchGestureRef.current = null;
+    }
+    if (panGestureRef.current?.pointerId === event.pointerId) panGestureRef.current = null;
+    if (!pinchGestureRef.current && !panGestureRef.current) setIsPanning(false);
+  };
+
+  const handleStageWheel = (event: WheelEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const factor = Math.exp(-event.deltaY * 0.0014);
+    zoomAtClientPoint(event.clientX, event.clientY, zoomRef.current * factor);
   };
 
   const updateItem = (id: string, key: keyof SandboxItem, value: number | boolean) => {
@@ -503,11 +717,12 @@ export default function SandboxLab() {
   };
 
   const resizeItem = (event: PointerEvent<HTMLButtonElement>) => {
+    if (pinchGestureRef.current) return;
     const resize = resizeRef.current;
     if (!resize) return;
     const point = stageCoordinates(event.clientX, event.clientY);
     const moving = {
-      x: clamp(snapToGrid(point.x), 0, 100),
+      x: clamp(snapToGrid(point.x), 0, SANDBOX_WORLD_WIDTH),
       y: clamp(snapToGrid(point.y), 0, GROUND_Y),
     };
     const original = resize.original;
@@ -578,6 +793,7 @@ export default function SandboxLab() {
       if (original.type === "wheel" || original.type === "pulley") nextItem.radius = nextItem.size / 2;
     }
 
+    nextItem = clampItemToWorkspace(nextItem) as SandboxItem;
     nextItem.initialX = nextItem.x;
     nextItem.initialY = nextItem.y;
     itemsRef.current = itemsRef.current.map((item) => item.id === resize.id ? nextItem : item);
@@ -613,26 +829,27 @@ export default function SandboxLab() {
   };
 
   const moveItem = (event: PointerEvent<HTMLDivElement>) => {
+    if (pinchGestureRef.current) return;
     const drag = dragRef.current;
     if (!drag) return;
     const point = stageCoordinates(event.clientX, event.clientY);
     const current = itemsRef.current;
     const dragged = current.find((item) => item.id === drag.id);
     if (!dragged) return;
-    const rawX = clamp(snapToGrid(point.x - drag.offsetX), 2, 98);
-    const rawY = clamp(snapToGrid(point.y - drag.offsetY), 2, GROUND_Y);
+    const rawX = clamp(snapToGrid(point.x - drag.offsetX), 0, SANDBOX_WORLD_WIDTH);
+    const rawY = clamp(snapToGrid(point.y - drag.offsetY), 0, GROUND_Y);
     if (Math.hypot(rawX - dragged.x, rawY - dragged.y) < 0.01) return;
     drag.moved = true;
 
     const descendants = attachedDescendants(current, drag.id);
-    const provisional = {
+    const provisional = clampItemToWorkspace({
       ...dragged,
       x: rawX,
       y: rawY,
       snapTargetId: null,
       snapOffsetX: 0,
       snapOffsetY: 0,
-    };
+    }) as SandboxItem;
     const snap = findSnapPlacement(
       provisional,
       current.filter((item) => item.id !== drag.id && !descendants.has(item.id)),
@@ -641,8 +858,8 @@ export default function SandboxLab() {
     const target = snap ? current.find((item) => item.id === snap.targetId) : null;
     const placed = snap ? {
       ...provisional,
-      x: clamp(snap.x, 2, 98),
-      y: clamp(snap.y, 2, GROUND_Y),
+      x: snap.x,
+      y: snap.y,
       snapTargetId: persistent ? snap.targetId : null,
       snapOffsetX: persistent ? snap.x - (target?.x ?? snap.x) : 0,
       snapOffsetY: persistent ? snap.y - (target?.y ?? snap.y) : 0,
@@ -780,34 +997,52 @@ export default function SandboxLab() {
             <div className="sandbox-toolbar-meta">
               <span>{dynamicCount} moving</span>
               <span>{links.length} connected</span>
-              <span>grid {GRID_STEP}</span>
+              <span>{SANDBOX_WORLD_WIDTH}×{SANDBOX_WORLD_HEIGHT} grid</span>
               <label className="sandbox-hitbox-toggle"><input type="checkbox" checked={showHitboxes} onChange={(event) => setShowHitboxes(event.target.checked)} /> Hitboxes</label>
               <span className="sandbox-speed-buttons" role="group" aria-label="Sandbox playback speed">
                 {[0.5, 1, 2].map((speed) => <button key={speed} type="button" className={playbackSpeed === speed ? "active" : ""} onClick={() => setPlaybackSpeed(speed)} aria-pressed={playbackSpeed === speed}>{speed}×</button>)}
               </span>
               <span className="sandbox-zoom-controls" aria-label="Canvas zoom">
-                <button type="button" onClick={() => setZoom((current) => clamp(current - 0.25, 0.5, 1.75))} aria-label="Zoom out">−</button>
+                <button type="button" onClick={() => nudgeZoom(0.8)} aria-label="Zoom out">−</button>
                 <output>{Math.round(zoom * 100)}%</output>
-                <button type="button" onClick={() => setZoom((current) => clamp(current + 0.25, 0.5, 1.75))} aria-label="Zoom in">+</button>
+                <button type="button" onClick={() => nudgeZoom(1.25)} aria-label="Zoom in">+</button>
+                <button type="button" onClick={() => centerCamera()} aria-label="Center sandbox view">◎</button>
               </span>
             </div>
           </div>
 
           <div
-            className="sandbox-stage"
-            style={{ "--sandbox-zoom": zoom } as CSSProperties}
+            ref={stageRef}
+            className={`sandbox-stage ${isPanning ? "panning" : ""}`}
+            onDragOver={(event) => event.preventDefault()}
+            onDrop={handleStageDrop}
+            onPointerDown={handleStagePointerDown}
+            onPointerMove={handleStagePointerMove}
+            onPointerUp={handleStagePointerEnd}
+            onPointerCancel={handleStagePointerEnd}
+            onWheel={handleStageWheel}
           >
             <div
-              ref={stageRef}
               className={`sandbox-world ${connectorTool || pulleyLinkId ? "connecting" : ""} ${showHitboxes ? "show-hitboxes" : ""}`}
-              onDragOver={(event) => event.preventDefault()}
-              onDrop={handleStageDrop}
+              style={{
+                width: `${SANDBOX_WORLD_WIDTH * CANVAS_PIXELS_PER_UNIT}px`,
+                height: `${SANDBOX_WORLD_HEIGHT * CANVAS_PIXELS_PER_UNIT}px`,
+                transform: `translate(${camera.x}px, ${camera.y}px) scale(${zoom})`,
+                "--sandbox-grid-step": `${GRID_STEP * CANVAS_PIXELS_PER_UNIT}px`,
+                "--sandbox-major-grid-step": `${GRID_STEP * CANVAS_PIXELS_PER_UNIT * 5}px`,
+              } as CSSProperties}
               role="application"
-              aria-label="Physics sandbox canvas. Drag items to place them on the five-unit grid."
+              aria-label={`Physics sandbox canvas. Drag items on the ${SANDBOX_WORLD_WIDTH} by ${SANDBOX_WORLD_HEIGHT} coordinate grid. Drag empty space to pan and pinch or use the mouse wheel to zoom.`}
             >
             <div className="sandbox-grid" aria-hidden="true" />
-            <div className="sandbox-floor"><span>Set ground · y = 0</span></div>
-            <svg className="sandbox-rope-layer" viewBox="0 0 100 100" preserveAspectRatio="none" aria-label="Rope connections">
+            <div
+              className="sandbox-floor"
+              style={{
+                top: `${GROUND_Y * CANVAS_PIXELS_PER_UNIT}px`,
+                height: `${(SANDBOX_WORLD_HEIGHT - GROUND_Y) * CANVAS_PIXELS_PER_UNIT}px`,
+              }}
+            ><span>Set ground · y = 0</span></div>
+            <svg className="sandbox-rope-layer" viewBox={`0 0 ${SANDBOX_WORLD_WIDTH} ${SANDBOX_WORLD_HEIGHT}`} preserveAspectRatio="none" aria-label="Rope connections">
               {ropeRoutes.map(({ link, route, a, b }) => {
                 if (!a || !b || route.points.length < 2) return null;
                 const path = ropePath(route.points);
@@ -834,12 +1069,12 @@ export default function SandboxLab() {
               const end = route.points.at(-1);
               return (
                 <div key={`${link.id}-markers`} className={`sandbox-rope-markers ${selectedLinkId === link.id ? "selected" : ""}`} aria-hidden="true">
-                  <span className="rope-marker marker-start" style={{ left: `${start.x}%`, top: `${start.y}%` }}>S</span>
+                  <span className="rope-marker marker-start" style={{ left: `${start.x * CANVAS_PIXELS_PER_UNIT}px`, top: `${start.y * CANVAS_PIXELS_PER_UNIT}px` }}>S</span>
                   {route.wraps.map((wrap: { id: string }, index: number) => {
                     const pulley = itemsById.get(wrap.id);
-                    return pulley ? <span key={`${wrap.id}-${index}`} className="rope-marker marker-pulley" style={{ left: `${pulley.x}%`, top: `${pulley.y}%` }}>P{index + 1}</span> : null;
+                    return pulley ? <span key={`${wrap.id}-${index}`} className="rope-marker marker-pulley" style={{ left: `${pulley.x * CANVAS_PIXELS_PER_UNIT}px`, top: `${pulley.y * CANVAS_PIXELS_PER_UNIT}px` }}>P{index + 1}</span> : null;
                   })}
-                  {end && <span className="rope-marker marker-end" style={{ left: `${end.x}%`, top: `${end.y}%` }}>E</span>}
+                  {end && <span className="rope-marker marker-end" style={{ left: `${end.x * CANVAS_PIXELS_PER_UNIT}px`, top: `${end.y * CANVAS_PIXELS_PER_UNIT}px` }}>E</span>}
                 </div>
               );
             })}
@@ -861,7 +1096,20 @@ export default function SandboxLab() {
                 <div
                   key={item.id}
                   className={`sandbox-entity entity-${item.type} ${selectedItemId === item.id ? "selected" : ""} ${linkStartId === item.id ? "link-start" : ""} ${pulleyLinkId && item.type === "pulley" ? "pulley-target" : ""} ${activeSnap ? "snapping" : ""} ${snapTarget ? "attached" : ""}`}
-                  style={{ left: `${item.x}%`, top: `${item.y}%`, width: dimensions.width, height: dimensions.height, transform: itemTransform(item), "--entity-angle": `${visualAngle}deg`, "--counter-entity-angle": `${-visualAngle}deg`, "--pendulum-angle": `${item.angle}deg`, "--incline-angle": `${-item.angle}deg` } as CSSProperties}
+                  style={{
+                    left: `${item.x * CANVAS_PIXELS_PER_UNIT}px`,
+                    top: `${item.y * CANVAS_PIXELS_PER_UNIT}px`,
+                    width: dimensions.width,
+                    height: dimensions.height,
+                    transform: itemTransform(item),
+                    "--entity-angle": `${visualAngle}deg`,
+                    "--counter-entity-angle": `${-visualAngle}deg`,
+                    "--pendulum-angle": `${item.angle}deg`,
+                    "--incline-angle": `${-item.angle}deg`,
+                    "--pendulum-arm-length": `${Math.max(item.length * WORLD_SCALE * CANVAS_PIXELS_PER_UNIT, 42)}px`,
+                    "--pendulum-bob-size": `${Math.max(item.size * WORLD_SCALE * CANVAS_PIXELS_PER_UNIT, 28)}px`,
+                    "--pendulum-bob-offset": `${-Math.max(item.size * WORLD_SCALE * CANVAS_PIXELS_PER_UNIT, 28) / 2}px`,
+                  } as CSSProperties}
                   role="button"
                   tabIndex={0}
                   aria-label={`${item.label} at ${item.x.toFixed(0)}, ${item.y.toFixed(0)}${snapTarget ? ` attached to ${snapTarget.label}` : ""}`}
@@ -890,10 +1138,10 @@ export default function SandboxLab() {
                     {item.type === "cart" && <><i /><i /></>}
                     {item.type === "pulley" && <i />}
                     {item.type === "rod" && <span className="rod-anchor-points"><i className={item.anchorEnabled && item.anchorPosition === -1 ? "active" : ""} /><i className={item.anchorEnabled && item.anchorPosition === 0 ? "active" : ""} /><i className={item.anchorEnabled && item.anchorPosition === 1 ? "active" : ""} /></span>}
-                    {item.type === "pendulum" && <><i className="pendulum-arm" style={{ height: `${clamp(item.length * 35, 72, 190)}px` }}><b /></i></>}
+                    {item.type === "pendulum" && <><i className="pendulum-arm"><b /></i></>}
                     {item.type === "gravity-region" && <b style={{ transform: `rotate(${item.gravityDirection - 90}deg)` }}>↓</b>}
                   </span>
-                  <span className="sandbox-hitbox" aria-hidden="true"><i>hitbox</i>{item.type === "pendulum" && <b className="pendulum-hitbox-arm" style={{ height: `${clamp(item.length * 35, 72, 190)}px` }}><em /></b>}</span>
+                  <span className="sandbox-hitbox" aria-hidden="true"><i>hitbox</i>{item.type === "pendulum" && <b className="pendulum-hitbox-arm"><em /></b>}</span>
                   {isDynamicItem(item) && speed > 0.08 && <span className="sandbox-velocity" style={{ "--velocity-angle": `${Math.atan2(item.vy, item.vx)}rad`, "--velocity-length": `${clamp(speed * 9, 26, 78)}px` } as CSSProperties}><i>{speed.toFixed(1)} m/s</i></span>}
                   {(connectorTool || (pulleyLinkId && item.type === "pulley")) && <button
                     type="button"
@@ -939,10 +1187,11 @@ export default function SandboxLab() {
             </div>
           </div>
 
-          <div className="sandbox-stage-actions"><button type="button" onClick={loadStarter}>Load starter setup</button><button type="button" onClick={clear}>Clear canvas</button><span>Drag corner handles to resize · surface contacts are perfectly elastic.</span></div>
+          <div className="sandbox-stage-actions"><button type="button" onClick={loadStarter}>Load starter setup</button><button type="button" onClick={clear}>Clear canvas</button><span>Drag empty grid to pan · wheel or pinch to zoom · snaps meet edge to edge.</span></div>
+        </div>
 
-        <aside className="sandbox-inspector sandbox-properties-popover" aria-label="Selected item properties" hidden={!selectedItem && !selectedLink}>
-          <div className="sandbox-panel-title"><span>Properties</span><small>{selectedItem ? selectedItem.label : selectedLink?.type}</small><button type="button" onClick={() => { setSelectedItemId(null); setSelectedLinkId(null); setPulleyLinkId(null); }} aria-label="Close properties">×</button></div>
+        <aside className="sandbox-inspector" aria-label="Selected item properties">
+          <div className="sandbox-panel-title"><span>Properties</span><small>{selectedItem ? selectedItem.label : selectedLink?.type ?? "Select an object"}</small>{(selectedItem || selectedLink) && <button type="button" onClick={() => { setSelectedItemId(null); setSelectedLinkId(null); setPulleyLinkId(null); }} aria-label="Clear selected properties">×</button>}</div>
           {selectedItem ? (
             <div className="sandbox-properties">
               <div className="sandbox-selection-name"><span aria-hidden="true">{ICONS[selectedItem.type]}</span><div><strong>{selectedItem.label}</strong><small>{isFixedItem(selectedItem) ? "Anchored structure" : selectedItem.type === "pendulum" ? "Oscillating system" : "Dynamic object"}</small></div></div>
@@ -979,9 +1228,8 @@ export default function SandboxLab() {
               </div>}
               <button type="button" className="sandbox-delete" onClick={removeSelected}>Remove connection</button>
             </div>
-          ) : null}
+          ) : <div className="sandbox-inspector-empty"><span aria-hidden="true">↖</span><strong>Select an object</strong><p>Its dimensions, motion, and connection settings will stay here beside the grid.</p></div>}
         </aside>
-        </div>
       </div>
     </section>
   );

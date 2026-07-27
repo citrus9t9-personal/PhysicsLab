@@ -2146,9 +2146,9 @@ h1 em {
 
 .sandbox-workspace {
   display: grid;
-  grid-template-columns: 245px minmax(600px, 1fr);
+  grid-template-columns: 230px minmax(0, 1fr) 300px;
   align-items: start;
-  gap: 20px;
+  gap: 16px;
 }
 
 .sandbox-palette,
@@ -2166,6 +2166,14 @@ h1 em {
 
 .sandbox-palette {
   max-height: 760px;
+  overflow-y: auto;
+}
+
+.sandbox-inspector {
+  position: sticky;
+  top: 18px;
+  max-height: 760px;
+  min-height: 420px;
   overflow-y: auto;
 }
 
@@ -2246,6 +2254,7 @@ h1 em {
   padding: 8px 10px;
   border-bottom: 1px solid var(--ink);
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
@@ -2272,6 +2281,7 @@ h1 em {
 
 .sandbox-toolbar-meta {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: flex-end;
   gap: 13px;
@@ -2310,7 +2320,7 @@ h1 em {
   border: 1px solid var(--line-dark);
   background: var(--surface);
   display: inline-grid;
-  grid-template-columns: 28px 48px 28px;
+  grid-template-columns: 28px 48px 28px 28px;
   align-items: stretch;
 }
 
@@ -2325,6 +2335,7 @@ h1 em {
 }
 
 .sandbox-zoom-controls button:hover { background: var(--orange-soft); }
+.sandbox-zoom-controls button + button { border-left: 1px solid var(--line); }
 .sandbox-zoom-controls output {
   border-inline: 1px solid var(--line);
   display: grid;
@@ -2336,22 +2347,26 @@ h1 em {
 
 .sandbox-stage {
   position: relative;
-  height: 650px;
-  overflow: auto;
+  height: 680px;
+  overflow: hidden;
   background: #dfe3de;
   overscroll-behavior: contain;
+  touch-action: none;
+  cursor: grab;
 }
 
+.sandbox-stage.panning { cursor: grabbing; }
+
 .sandbox-world {
-  position: relative;
-  width: 100%;
-  height: 650px;
+  position: absolute;
+  left: 0;
+  top: 0;
   overflow: hidden;
   touch-action: none;
   background: #f8f7f1;
-  transform: scale(var(--sandbox-zoom, 1));
   transform-origin: top left;
   user-select: none;
+  will-change: transform;
 }
 
 .sandbox-world.connecting { cursor: crosshair; }
@@ -2359,11 +2374,16 @@ h1 em {
 .sandbox-grid {
   position: absolute;
   inset: 0;
-  opacity: 0.58;
   background-image:
-    linear-gradient(rgba(20, 32, 31, 0.09) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(20, 32, 31, 0.09) 1px, transparent 1px);
-  background-size: 5% 5%;
+    linear-gradient(rgba(20, 32, 31, 0.15) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(20, 32, 31, 0.15) 1px, transparent 1px),
+    linear-gradient(rgba(20, 32, 31, 0.3) 2px, transparent 2px),
+    linear-gradient(90deg, rgba(20, 32, 31, 0.3) 2px, transparent 2px);
+  background-size:
+    var(--sandbox-grid-step) var(--sandbox-grid-step),
+    var(--sandbox-grid-step) var(--sandbox-grid-step),
+    var(--sandbox-major-grid-step) var(--sandbox-major-grid-step),
+    var(--sandbox-major-grid-step) var(--sandbox-major-grid-step);
 }
 
 .sandbox-floor {
@@ -2371,21 +2391,20 @@ h1 em {
   z-index: 2;
   left: 0;
   right: 0;
-  top: 90%;
-  height: 10%;
   border-top: 4px solid var(--ink);
   background: repeating-linear-gradient(135deg, transparent 0 9px, rgba(20, 32, 31, 0.13) 9px 11px);
 }
 
 .sandbox-floor span {
   position: absolute;
-  right: 10px;
+  left: 50%;
   top: 8px;
   color: var(--muted);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 0.5rem;
   font-weight: 800;
   text-transform: uppercase;
+  transform: translateX(-50%);
 }
 
 .sandbox-entity {
@@ -2475,6 +2494,7 @@ h1 em {
   left: 50%;
   top: 0;
   width: 7px;
+  height: var(--pendulum-arm-length);
   margin-left: -3px;
   border: 2px dashed var(--blue);
   transform: rotate(var(--pendulum-angle));
@@ -2484,10 +2504,10 @@ h1 em {
 .pendulum-hitbox-arm em {
   position: absolute;
   left: 50%;
-  bottom: -22px;
-  width: 44px;
-  height: 44px;
-  margin-left: -22px;
+  bottom: var(--pendulum-bob-offset);
+  width: var(--pendulum-bob-size);
+  height: var(--pendulum-bob-size);
+  margin-left: var(--pendulum-bob-offset);
   border: 2px dashed var(--blue);
   border-radius: 50%;
   background: transparent;
@@ -2514,7 +2534,10 @@ h1 em {
 
 .entity-ball .sandbox-shape { border-radius: 50%; }
 
-.entity-cart .sandbox-shape { background: #8ab1e8; }
+.entity-cart .sandbox-shape {
+  bottom: 8px;
+  background: #8ab1e8;
+}
 .entity-cart .sandbox-shape i {
   position: absolute;
   bottom: -9px;
@@ -2550,7 +2573,7 @@ h1 em {
   top: 50%;
   bottom: auto;
   width: 100%;
-  height: 8px;
+  height: 15px;
   border: 2px dashed var(--blue);
   transform: translateY(-50%) rotate(var(--incline-angle));
   transform-origin: center;
@@ -2657,6 +2680,7 @@ h1 em {
   left: 50%;
   top: 0;
   width: 3px;
+  height: var(--pendulum-arm-length);
   background: var(--ink);
   transform: rotate(var(--pendulum-angle));
   transform-origin: top center;
@@ -2665,10 +2689,10 @@ h1 em {
 .pendulum-arm b {
   position: absolute;
   left: 50%;
-  bottom: -20px;
-  width: 40px;
-  height: 40px;
-  margin-left: -20px;
+  bottom: var(--pendulum-bob-offset);
+  width: var(--pendulum-bob-size);
+  height: var(--pendulum-bob-size);
+  margin-left: var(--pendulum-bob-offset);
   border: 2px solid var(--ink);
   border-radius: 50%;
   background: var(--orange);
@@ -2743,13 +2767,14 @@ h1 em {
 .sandbox-rope-hit {
   fill: none;
   stroke: transparent;
-  stroke-width: 2.4;
+  stroke-width: 18;
+  vector-effect: non-scaling-stroke;
 }
 
 .sandbox-rope-line {
   fill: none;
   stroke: var(--ink);
-  stroke-width: 0.44;
+  stroke-width: 3;
   stroke-linecap: round;
   stroke-linejoin: round;
   vector-effect: non-scaling-stroke;
@@ -2759,7 +2784,7 @@ h1 em {
 .sandbox-rope.selected .sandbox-rope-line,
 .sandbox-rope:focus-visible .sandbox-rope-line {
   stroke: var(--orange);
-  stroke-width: 0.68;
+  stroke-width: 4.5;
 }
 
 .sandbox-rope-markers {
@@ -2940,24 +2965,7 @@ h1 em {
   text-transform: uppercase;
 }
 
-.sandbox-inspector { min-height: 420px; }
-
-.sandbox-properties-popover {
-  position: absolute;
-  z-index: 45;
-  right: 18px;
-  top: 72px;
-  width: min(310px, calc(100% - 36px));
-  max-height: 560px;
-  min-height: 0;
-  overflow-y: auto;
-  box-shadow: 8px 8px 0 rgba(20, 32, 31, 0.82);
-}
-
-.sandbox-properties-popover[hidden] { display: none; }
-.sandbox-properties-popover .sandbox-properties { display: block; }
-
-.sandbox-properties-popover .sandbox-panel-title {
+.sandbox-inspector .sandbox-panel-title {
   position: sticky;
   z-index: 2;
   top: 0;
@@ -3226,25 +3234,7 @@ footer p {
   }
 
   .sandbox-workspace {
-    grid-template-columns: 220px minmax(540px, 1fr);
-  }
-
-  .sandbox-inspector {
-    grid-column: 1 / -1;
-  }
-
-  .sandbox-properties {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 0 18px;
-  }
-
-  .sandbox-selection-name,
-  .sandbox-snap-status,
-  .sandbox-route-summary,
-  .sandbox-route-actions,
-  .sandbox-delete {
-    grid-column: 1 / -1;
+    grid-template-columns: 200px minmax(0, 1fr) 270px;
   }
 
   .analysis-panel {
@@ -3335,10 +3325,23 @@ footer p {
 
   .sandbox-inspector {
     grid-column: auto;
+    position: static;
+    max-height: none;
   }
 
   .sandbox-properties {
+    display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0 18px;
+  }
+
+  .sandbox-selection-name,
+  .sandbox-snap-status,
+  .sandbox-route-summary,
+  .sandbox-route-actions,
+  .sandbox-delete,
+  .sandbox-inspector-empty {
+    grid-column: 1 / -1;
   }
 
   .comparison-panel {
@@ -3464,10 +3467,6 @@ footer p {
   }
 
   .sandbox-stage {
-    height: 500px;
-  }
-
-  .sandbox-world {
     height: 500px;
   }
 
