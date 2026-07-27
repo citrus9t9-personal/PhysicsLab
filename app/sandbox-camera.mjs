@@ -1,7 +1,18 @@
 const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
 
-export function clampSandboxZoom(value) {
-  return clamp(value, 0.2, 2.5);
+export function minimumSandboxZoom(viewport, world, floor = 0.2) {
+  return Math.max(floor, viewport.width / world.width, viewport.height / world.height);
+}
+
+export function clampSandboxZoom(value, minimum = 0.2) {
+  return clamp(value, minimum, 2.5);
+}
+
+export function bottomRightSandboxCamera(viewport, world, zoom) {
+  return {
+    x: viewport.width - world.width * zoom,
+    y: viewport.height - world.height * zoom,
+  };
 }
 
 export function screenPointToWorld(point, camera, zoom, pixelsPerUnit) {
@@ -11,8 +22,8 @@ export function screenPointToWorld(point, camera, zoom, pixelsPerUnit) {
   };
 }
 
-export function cameraForZoomAtPoint(camera, currentZoom, nextZoom, point, pixelsPerUnit) {
-  const zoom = clampSandboxZoom(nextZoom);
+export function cameraForZoomAtPoint(camera, currentZoom, nextZoom, point, pixelsPerUnit, minimumZoom = 0.2) {
+  const zoom = clampSandboxZoom(nextZoom, minimumZoom);
   const world = screenPointToWorld(point, camera, currentZoom, pixelsPerUnit);
   return {
     zoom,
@@ -23,12 +34,12 @@ export function cameraForZoomAtPoint(camera, currentZoom, nextZoom, point, pixel
   };
 }
 
-export function constrainSandboxCamera(camera, viewport, world, zoom, edge = 72) {
+export function constrainSandboxCamera(camera, viewport, world, zoom) {
   const scaledWidth = world.width * zoom;
   const scaledHeight = world.height * zoom;
   const constrainAxis = (value, viewportSize, worldSize) => {
     if (worldSize <= viewportSize) return (viewportSize - worldSize) / 2;
-    return clamp(value, viewportSize - worldSize - edge, edge);
+    return clamp(value, viewportSize - worldSize, 0);
   };
   return {
     x: constrainAxis(camera.x, viewport.width, scaledWidth),

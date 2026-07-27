@@ -8,10 +8,12 @@ import {
   SANDBOX_WORLD_HEIGHT,
   SANDBOX_WORLD_WIDTH,
   SANDBOX_TOOLS,
+  WORLD_SCALE,
   clampItemToWorkspace,
   collisionManifold,
   createSandboxItem,
   findSnapPlacement,
+  getItemBounds,
   getItemHitbox,
   getItemHitboxes,
   getRodAnchorPoint,
@@ -30,6 +32,7 @@ test("sandbox exposes every requested object and connector", () => {
 
 test("the click grid rounds placement and resize coordinates consistently", () => {
   assert.equal(GRID_STEP, 5);
+  assert.equal(WORLD_SCALE, GRID_STEP);
   assert.equal(SANDBOX_WORLD_WIDTH, 500);
   assert.equal(SANDBOX_WORLD_HEIGHT, 500);
   assert.equal(CANVAS_PIXELS_PER_UNIT, 6);
@@ -64,8 +67,8 @@ test("gravity regions use independently resizable width and height", () => {
   region.width = 1;
   region.height = 8;
   region.gravityDirection = 0;
-  const inside = createSandboxItem("block", "inside", 53, 50);
-  const outside = createSandboxItem("block", "outside", 55, 50);
+  const inside = createSandboxItem("block", "inside", 52, 50);
+  const outside = createSandboxItem("block", "outside", 54, 50);
   const next = stepSandbox([region, inside, outside], [], 0.04);
 
   assert.ok(next.find((item) => item.id === "inside").vx > 0);
@@ -104,8 +107,8 @@ test("platform hitboxes resize as full rectangles while inclines keep a sloped s
   const incline = createSandboxItem("incline", "incline", 60, 50);
   const inclineBox = getItemHitbox(incline);
 
-  assert.equal(platformBox.halfWidth, 21);
-  assert.equal(platformBox.halfHeight, 7);
+  assert.equal(platformBox.halfWidth, 15);
+  assert.equal(platformBox.halfHeight, 5);
   assert.equal(inclineBox.angle, (-incline.angle * Math.PI) / 180);
   assert.ok(inclineBox.halfWidth > inclineBox.halfHeight * 10);
 });
@@ -171,7 +174,8 @@ test("a rotated platform uses its rectangular hitbox as a wall", () => {
 test("the set ground and placed surfaces reflect perfectly elastically", () => {
   const platform = createSandboxItem("platform", "platform", 50, 60);
   const incline = createSandboxItem("incline", "incline", 70, 60);
-  const ball = createSandboxItem("ball", "ball", 40, GROUND_Y - 3.4);
+  const ball = createSandboxItem("ball", "ball", 40, GROUND_Y);
+  ball.y = GROUND_Y - getItemHitbox(ball).radius + 0.1;
   ball.vx = 0;
   ball.vy = 2;
   const next = stepSandbox([platform, incline, ball], [], 0.04).find((item) => item.id === "ball");
@@ -179,6 +183,86 @@ test("the set ground and placed surfaces reflect perfectly elastically", () => {
   assert.equal(platform.restitution, 1);
   assert.equal(incline.restitution, 1);
   assert.ok(next.vy < -2);
+});
+
+test("every edge of the sandbox is a rigid elastic wall", () => {
+  const reflect = (id, x, y, vx, vy) => {
+    const ball = createSandboxItem("ball", id, x, y);
+    ball.vx = vx;
+    ball.vy = vy;
+    return stepSandbox([ball], [], 0)[0];
+  };
+  const radius = getItemHitbox(createSandboxItem("ball", "measure")).radius;
+
+  assert.ok(reflect("left", radius - 0.1, 100, -2, 0).vx > 0);
+  assert.ok(reflect("right", SANDBOX_WORLD_WIDTH - radius + 0.1, 100, 2, 0).vx < 0);
+  assert.ok(reflect("top", 100, radius - 0.1, 0, -2).vy > 0);
+  assert.ok(reflect("bottom", 100, GROUND_Y - radius + 0.1, 0, 2).vy < 0);
+});
+
+test("default resizable dimensions occupy whole grid squares", () => {
+  const wholeSquares = (value) => Number.isInteger((value * WORLD_SCALE) / GRID_STEP);
+  for (const type of ["block", "ball", "cart", "rod", "wheel", "pendulum", "incline", "pulley"]) {
+    assert.ok(wholeSquares(createSandboxItem(type, type).size), `${type} size should follow the grid`);
+  }
+  const platform = createSandboxItem("platform", "platform");
+  const region = createSandboxItem("gravity-region", "region");
+  const pendulum = createSandboxItem("pendulum", "pendulum");
+
+  assert.ok(wholeSquares(platform.width));
+  assert.ok(wholeSquares(platform.height));
+  assert.ok(wholeSquares(region.width));
+  assert.ok(wholeSquares(region.height));
+  assert.ok(wholeSquares(pendulum.length));
+});
+
+test("blocks align to an incline when the slope supports them", () => {
+  const incline = createSandboxItem("incline", "incline", 200, 200);
+  incline.angle = 30;
+  const block = createSandboxItem("block", "block", 200, 185);
+  const snap = findSnapPlacement(block, [incline], 20);
+  assert.ok(snap);
+  const touchingBlock = { ...block, x: snap.x, y: snap.y, angle: 0, initialAngle: 0 };
+  const next = stepSandbox([incline, touchingBlock], [], 0.04).find((item) => item.id === "block");
+
+  assert.ok(Math.abs(next.angle + incline.angle) < 1e-9);
+  assert.equal(next.supportSurfaceId, incline.id);
+});
+
+test("a block leaving a slope projects its velocity horizontally on flat ground", () => {
+  const block = createSandboxItem("block", "block", 200, 200);
+  block.angle = -30;
+  const extent = getItemBounds(block).bottom - block.y;
+  block.y = GROUND_Y - extent + 0.01;
+  block.vx = 3;
+  block.vy = 4;
+  block.supportSurfaceId = "incline";
+  block.supportSurfaceAngle = -30;
+  block.supportAirTime = 0.04;
+  const next = stepSandbox([block], [], 0)[0];
+
+  assert.ok(Math.abs(next.vx - 5) < 1e-9);
+  assert.equal(next.vy, 0);
+  assert.equal(next.angle, 0);
+});
+
+test("a block keeps its downward velocity when a slope ends in a drop", () => {
+  const block = createSandboxItem("block", "block", 200, 200);
+  block.angle = -30;
+  block.vx = 3;
+  block.vy = 4;
+  block.supportSurfaceId = "incline";
+  block.supportSurfaceAngle = -30;
+  block.supportAirTime = 0;
+
+  const first = stepSandbox([block], [], 0.04)[0];
+  const second = stepSandbox([first], [], 0.04)[0];
+  const third = stepSandbox([second], [], 0.04)[0];
+
+  assert.ok(first.vy > block.vy);
+  assert.ok(third.vy > first.vy);
+  assert.equal(third.supportSurfaceId, null);
+  assert.equal(third.angle, 0);
 });
 
 test("nearby objects snap to the exact surface of another hitbox", () => {
@@ -211,7 +295,7 @@ test("workspace bounds place visible hitboxes exactly against the ground", () =>
 test("circle and rotated-surface snaps also stop at exact hitbox contact", () => {
   const pulley = createSandboxItem("pulley", "pulley", 100, 100);
   const block = createSandboxItem("block", "block", 112, 100);
-  const blockSnap = findSnapPlacement(block, [pulley]);
+  const blockSnap = findSnapPlacement(block, [pulley], 20);
   const placedBlock = { ...block, x: blockSnap.x, y: blockSnap.y };
   assert.equal(collisionManifold(placedBlock, pulley), null);
   assert.ok(collisionManifold({ ...placedBlock, x: placedBlock.x - 0.01 }, pulley));
@@ -220,7 +304,7 @@ test("circle and rotated-surface snaps also stop at exact hitbox contact", () =>
   platform.angle = 30;
   const normal = { x: 0.5, y: -Math.sqrt(3) / 2 };
   const ball = createSandboxItem("ball", "ball", 200 + normal.x * 10, 200 + normal.y * 10);
-  const ballSnap = findSnapPlacement(ball, [platform]);
+  const ballSnap = findSnapPlacement(ball, [platform], 20);
   const placedBall = { ...ball, x: ballSnap.x, y: ballSnap.y };
   assert.equal(collisionManifold(placedBall, platform), null);
   assert.ok(collisionManifold({

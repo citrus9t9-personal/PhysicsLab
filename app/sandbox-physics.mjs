@@ -1,9 +1,9 @@
-export const WORLD_SCALE = 7;
 export const GRID_STEP = 5;
+export const WORLD_SCALE = GRID_STEP;
 export const SANDBOX_WORLD_WIDTH = 500;
 export const SANDBOX_WORLD_HEIGHT = 500;
 export const CANVAS_PIXELS_PER_UNIT = 6;
-export const GROUND_Y = 480;
+export const GROUND_Y = SANDBOX_WORLD_HEIGHT;
 
 export const SANDBOX_TOOLS = [
   { type: "block", label: "Block", category: "Objects", description: "Adjustable mass, size, velocity, and friction." },
@@ -77,7 +77,7 @@ export function createSandboxItem(type, id, x = SANDBOX_WORLD_WIDTH / 2, y = GRO
     initialVx: 0,
     initialVy: 0,
     mass: 2,
-    size: 1.2,
+    size: 1,
     width: 5,
     height: 5,
     friction: 0.2,
@@ -87,7 +87,7 @@ export function createSandboxItem(type, id, x = SANDBOX_WORLD_WIDTH / 2, y = GRO
     angularVelocity: 0,
     radius: 1,
     inertia: 1,
-    length: 2.5,
+    length: 3,
     gravityStrength: 9.81,
     gravityDirection: 90,
     fixed: !DYNAMIC_TYPES.has(type),
@@ -100,15 +100,18 @@ export function createSandboxItem(type, id, x = SANDBOX_WORLD_WIDTH / 2, y = GRO
     snapOffsetY: 0,
     snapNormalX: 0,
     snapNormalY: -1,
+    supportSurfaceId: null,
+    supportSurfaceAngle: 0,
+    supportAirTime: 1,
   };
 
   if (type === "ball") return { ...base, mass: 1, size: 1, vx: 3, vy: -4, initialVx: 3, initialVy: -4, restitution: 0.72 };
-  if (type === "cart") return { ...base, mass: 3, size: 1.6, vx: 2, initialVx: 2, friction: 0.05, restitution: 0.1 };
+  if (type === "cart") return { ...base, mass: 3, size: 2, vx: 2, initialVx: 2, friction: 0.05, restitution: 0.1 };
   if (type === "platform") return { ...base, size: 5, width: 5, height: 1, friction: 0.25, restitution: 1 };
   if (type === "incline") return { ...base, size: 5, angle: 28, initialAngle: 28, friction: 0.18, restitution: 1 };
-  if (type === "pulley") return { ...base, size: 1.5, radius: 0.75 };
+  if (type === "pulley") return { ...base, size: 2, radius: 1 };
   if (type === "rod") return { ...base, size: 3, angle: 15, initialAngle: 15, inertia: 2, restitution: 1 };
-  if (type === "wheel") return { ...base, mass: 2, size: 1.5, radius: 0.75, inertia: 0.56, vx: 2, initialVx: 2, restitution: 0.4 };
+  if (type === "wheel") return { ...base, mass: 2, size: 2, radius: 1, inertia: 0.56, vx: 2, initialVx: 2, restitution: 0.4 };
   if (type === "pendulum") return { ...base, mass: 1, size: 1, length: 3, angle: 24, initialAngle: 24, angularVelocity: 0 };
   if (type === "gravity-region") return { ...base, size: 5, width: 8, height: 5, gravityStrength: 9.81, gravityDirection: 90 };
   return base;
@@ -116,11 +119,11 @@ export function createSandboxItem(type, id, x = SANDBOX_WORLD_WIDTH / 2, y = GRO
 
 export function createStarterSandbox() {
   return [
-    createSandboxItem("gravity-region", "starter-gravity", 251, 430),
-    createSandboxItem("platform", "starter-platform", 250, 462),
-    createSandboxItem("incline", "starter-incline", 273, 445),
-    createSandboxItem("block", "starter-block", 228, 408),
-    createSandboxItem("ball", "starter-ball", 246, 407),
+    createSandboxItem("gravity-region", "starter-gravity", 430, 450),
+    createSandboxItem("platform", "starter-platform", 430, 482.5),
+    createSandboxItem("incline", "starter-incline", 468, 470),
+    createSandboxItem("block", "starter-block", 410, 450),
+    createSandboxItem("ball", "starter-ball", 435, 450),
   ];
 }
 
@@ -421,14 +424,18 @@ function resolveStaticCollision(item, surface) {
       }
     }
   }
-  if (!manifold) return;
+  if (!manifold) return null;
   const { normal, penetration } = manifold;
   item.x -= normal.x * penetration;
   item.y -= normal.y * penetration;
 
   const normalVelocity = item.vx * normal.x + item.vy * normal.y;
   if (normalVelocity > 0) {
-    const bounce = Math.max(item.restitution, surface.restitution ?? 0);
+    const supportedBlock =
+      item.type === "block" &&
+      normal.y > 0.35 &&
+      ["platform", "incline", "rod"].includes(surface.type);
+    const bounce = supportedBlock ? 0 : Math.max(item.restitution, surface.restitution ?? 0);
     item.vx -= (1 + bounce) * normalVelocity * normal.x;
     item.vy -= (1 + bounce) * normalVelocity * normal.y;
   }
@@ -438,6 +445,7 @@ function resolveStaticCollision(item, surface) {
   const friction = clamp((item.friction + (surface.friction ?? 0)) * 0.035, 0, 0.18);
   item.vx -= tangentVelocity * friction * tangent.x;
   item.vy -= tangentVelocity * friction * tangent.y;
+  return manifold;
 }
 
 function attachmentPoint(item, target) {
@@ -718,23 +726,94 @@ function solveBodyCollisions(items) {
 
 function keepInsideStage(item) {
   const bounds = getItemBounds(item);
-  if (bounds.left < 0) { item.x -= bounds.left; item.vx = Math.abs(item.vx); }
-  if (bounds.right > SANDBOX_WORLD_WIDTH) { item.x -= bounds.right - SANDBOX_WORLD_WIDTH; item.vx = -Math.abs(item.vx); }
-  if (bounds.top < 0) { item.y -= bounds.top; item.vy = Math.abs(item.vy); }
+  const contacts = { left: false, right: false, top: false, ground: false };
+  if (bounds.left < 0) {
+    item.x -= bounds.left;
+    item.vx = Math.abs(item.vx);
+    contacts.left = true;
+  }
+  if (bounds.right > SANDBOX_WORLD_WIDTH) {
+    item.x -= bounds.right - SANDBOX_WORLD_WIDTH;
+    item.vx = -Math.abs(item.vx);
+    contacts.right = true;
+  }
+  if (bounds.top < 0) {
+    item.y -= bounds.top;
+    item.vy = Math.abs(item.vy);
+    contacts.top = true;
+  }
   if (bounds.bottom > GROUND_Y) {
     item.y -= bounds.bottom - GROUND_Y;
-    item.vy = -Math.abs(item.vy);
+    item.vy = item.type === "block" ? 0 : -Math.abs(item.vy);
+    contacts.ground = true;
   }
+  return contacts;
+}
+
+function supportAngleFor(surface) {
+  if (surface.type === "incline") return -surface.angle;
+  if (surface.type === "platform" || surface.type === "rod") return surface.angle ?? 0;
+  return null;
 }
 
 function resolveEnvironment(item, items) {
-  keepInsideStage(item);
+  const boundaryIncomingSpeed = Math.hypot(item.vx, item.vy);
+  const boundary = keepInsideStage(item);
+  let support = boundary.ground
+    ? { id: "world-ground", angle: 0, strength: 1, incomingSpeed: boundaryIncomingSpeed }
+    : null;
   for (const surface of items) {
     if (surface.id === item.id) continue;
     if (surface.snapTargetId === item.id || item.snapTargetId === surface.id) continue;
     if (!STATIC_COLLIDER_TYPES.has(surface.type) && !(surface.type === "rod" && surface.anchorEnabled)) continue;
     if (surface.type === "pulley" && !surface.fixed) continue;
-    resolveStaticCollision(item, surface);
+    const incomingSpeed = Math.hypot(item.vx, item.vy);
+    const manifold = resolveStaticCollision(item, surface);
+    const surfaceAngle = supportAngleFor(surface);
+    if (!manifold || manifold.normal.y <= 0.35 || surfaceAngle === null) continue;
+    if (item.type === "block" && Math.abs(item.angle - surfaceAngle) > 0.001) {
+      item.angle = surfaceAngle;
+      resolveStaticCollision(item, surface);
+    }
+    if (!support || manifold.normal.y > support.strength) {
+      support = {
+        id: surface.id,
+        angle: surfaceAngle,
+        strength: manifold.normal.y,
+        incomingSpeed,
+      };
+    }
+  }
+  return support;
+}
+
+function updateBlockSupport(item, support, delta) {
+  if (item.type !== "block") return;
+  const previousAngle = item.supportSurfaceAngle ?? 0;
+  const previousAirTime = item.supportAirTime ?? 1;
+  if (support) {
+    const arrivingOnFlat =
+      Math.abs(support.angle) < 0.001 &&
+      Math.abs(previousAngle) > 0.001 &&
+      previousAirTime <= 0.08;
+    if (arrivingOnFlat) {
+      const speed = support.incomingSpeed ?? Math.hypot(item.vx, item.vy);
+      const direction = Math.sign(item.vx) || Math.sign(Math.cos(radians(previousAngle))) || 1;
+      item.vx = direction * speed;
+      item.vy = 0;
+    }
+    item.angle = support.angle;
+    item.supportSurfaceId = support.id;
+    item.supportSurfaceAngle = support.angle;
+    item.supportAirTime = 0;
+    return;
+  }
+
+  item.supportAirTime = previousAirTime + delta;
+  if (item.supportAirTime > 0.08) {
+    item.angle = 0;
+    item.supportSurfaceId = null;
+    item.supportSurfaceAngle = 0;
   }
 }
 
@@ -803,6 +882,7 @@ function stepAnchoredRod(item, items, delta) {
 export function stepSandbox(items, links, deltaSeconds) {
   const delta = Math.min(Math.max(deltaSeconds, 0), 0.04);
   const next = items.map((item) => ({ ...item }));
+  const supportById = new Map();
   syncSnapAttachments(next);
   applySpringForces(next, links, delta);
 
@@ -829,13 +909,15 @@ export function stepSandbox(items, links, deltaSeconds) {
     item.x += item.vx * WORLD_SCALE * delta;
     item.y += item.vy * WORLD_SCALE * delta;
     if (item.type === "wheel") item.angle += (item.vx / Math.max(item.radius, 0.2)) * delta * (180 / Math.PI);
-    resolveEnvironment(item, next);
+    const support = resolveEnvironment(item, next);
+    if (support) supportById.set(item.id, support);
   }
 
   solveBodyCollisions(next);
   solveRopes(next, links);
   for (const item of next.filter((candidate) => isDynamicItem(candidate) && !isFixedItem(candidate))) {
-    resolveEnvironment(item, next);
+    const support = resolveEnvironment(item, next) ?? supportById.get(item.id) ?? null;
+    updateBlockSupport(item, support, delta);
   }
   syncSnapAttachments(next);
   return next;
@@ -850,6 +932,9 @@ export function resetSandbox(items) {
     vy: item.initialVy,
     angle: item.initialAngle,
     angularVelocity: 0,
+    supportSurfaceId: null,
+    supportSurfaceAngle: 0,
+    supportAirTime: 1,
   }));
   for (const item of next) {
     if (item.type === "rod" && item.anchorEnabled) {
