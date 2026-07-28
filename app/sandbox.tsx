@@ -23,6 +23,7 @@ import {
   createSandboxItem,
   createStarterSandbox,
   findSnapPlacement,
+  getInclineGeometry,
   getRodAnchorPoint,
   getRopeRoute,
   isDynamicItem,
@@ -156,8 +157,9 @@ function entityDimensions(item: SandboxItem) {
     };
   }
   if (item.type === "incline") {
-    const width = Math.max(item.size * WORLD_SCALE * CANVAS_PIXELS_PER_UNIT, GRID_STEP * CANVAS_PIXELS_PER_UNIT);
-    const height = Math.max(Math.tan((Math.abs(item.angle) * Math.PI) / 180) * width, 18);
+    const geometry = getInclineGeometry(item);
+    const width = Math.max(geometry.width * CANVAS_PIXELS_PER_UNIT, GRID_STEP * CANVAS_PIXELS_PER_UNIT);
+    const height = Math.max(geometry.height * CANVAS_PIXELS_PER_UNIT, 1);
     return { width: `${width}px`, height: `${height}px` };
   }
   if (item.type === "rod") {
@@ -609,7 +611,11 @@ export default function SandboxLab() {
       if (key === "radius" && (item.type === "wheel" || item.type === "pulley")) next.size = Number(value) * 2;
       if (key === "width" && item.type === "platform") next.size = Number(value);
       if (key === "size" && item.type === "platform") next.width = Number(value);
-      if (key === "size" && next.type === "block") {
+      const gridGeometryChanged =
+        (next.type === "block" && key === "size") ||
+        (next.type === "platform" && ["width", "height", "angle"].includes(key)) ||
+        (next.type === "incline" && ["size", "angle"].includes(key));
+      if (gridGeometryChanged) {
         const aligned = snapSandboxItemPosition(next, next.x, next.y);
         const positioned = clampItemToWorkspace({ ...next, ...aligned });
         next.x = positioned.x;
@@ -827,8 +833,21 @@ export default function SandboxLab() {
         height: height / WORLD_SCALE,
       };
       if (original.type === "platform") nextItem.size = nextItem.width;
-    } else if (["incline", "rod"].includes(original.type)) {
-      const visualAngle = original.type === "incline" ? -original.angle : original.angle;
+    } else if (original.type === "incline") {
+      const geometry = getInclineGeometry(original);
+      const isStart = resize.handle === "start";
+      const fixedX = original.x + (isStart ? geometry.width / 2 : -geometry.width / 2);
+      const width = Math.max(GRID_STEP, snapToGrid(Math.abs(moving.x - fixedX)));
+      const bottom = snapToGrid(original.y + geometry.height / 2);
+      const height = Math.tan((Math.abs(original.angle) * Math.PI) / 180) * width;
+      nextItem = {
+        ...nextItem,
+        size: width / WORLD_SCALE,
+        x: fixedX + (isStart ? -width / 2 : width / 2),
+        y: bottom - height / 2,
+      };
+    } else if (original.type === "rod") {
+      const visualAngle = original.angle;
       const theta = (visualAngle * Math.PI) / 180;
       const axis = { x: Math.cos(theta), y: Math.sin(theta) };
       const halfLength = (original.size * WORLD_SCALE) / 2;
@@ -851,7 +870,7 @@ export default function SandboxLab() {
         x: center.x,
         y: center.y,
       };
-      if (original.type === "rod" && original.anchorEnabled) {
+      if (original.anchorEnabled) {
         const anchorOffset = original.anchorPosition * length / 2;
         nextItem.x = original.anchorX - axis.x * anchorOffset;
         nextItem.y = original.anchorY - axis.y * anchorOffset;
@@ -863,10 +882,11 @@ export default function SandboxLab() {
       const diameter = Math.max(GRID_STEP, snapToGrid(radius * 2));
       nextItem = { ...nextItem, size: diameter / WORLD_SCALE };
       if (original.type === "wheel" || original.type === "pulley") nextItem.radius = nextItem.size / 2;
-      if (original.type === "block") {
-        const aligned = snapSandboxItemPosition(nextItem, nextItem.x, nextItem.y);
-        nextItem = { ...nextItem, ...aligned };
-      }
+    }
+
+    if (["block", "platform", "incline"].includes(nextItem.type)) {
+      const aligned = snapSandboxItemPosition(nextItem, nextItem.x, nextItem.y);
+      nextItem = { ...nextItem, ...aligned };
     }
 
     nextItem = clampItemToWorkspace(nextItem) as SandboxItem;
@@ -1184,6 +1204,7 @@ export default function SandboxLab() {
                     "--counter-entity-angle": `${-visualAngle}deg`,
                     "--pendulum-angle": `${item.angle}deg`,
                     "--incline-angle": `${-item.angle}deg`,
+                    "--incline-hitbox-length": `${getInclineGeometry(item).diagonal * CANVAS_PIXELS_PER_UNIT}px`,
                     "--pendulum-arm-length": `${Math.max(item.length * WORLD_SCALE * CANVAS_PIXELS_PER_UNIT, 42)}px`,
                     "--pendulum-bob-size": `${Math.max(item.size * WORLD_SCALE * CANVAS_PIXELS_PER_UNIT, 28)}px`,
                     "--pendulum-bob-offset": `${-Math.max(item.size * WORLD_SCALE * CANVAS_PIXELS_PER_UNIT, 28) / 2}px`,

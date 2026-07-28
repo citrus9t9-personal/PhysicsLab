@@ -14,6 +14,7 @@ import {
   createSandboxItem,
   createStarterSandbox,
   findSnapPlacement,
+  getInclineGeometry,
   getItemBounds,
   getItemHitbox,
   getItemHitboxes,
@@ -43,7 +44,7 @@ test("the click grid rounds placement and resize coordinates consistently", () =
   assert.equal(snapToGrid(31, 10), 30);
 });
 
-test("a one-by-one block occupies one grid cell instead of straddling grid lines", () => {
+test("blocks, platforms, and incline boundaries sit flush with grid lines", () => {
   const block = createSandboxItem("block", "block", 12, 18);
   const position = snapSandboxItemPosition(block);
   const halfSize = (block.size * WORLD_SCALE) / 2;
@@ -54,6 +55,24 @@ test("a one-by-one block occupies one grid cell instead of straddling grid lines
   assert.equal((position.x + halfSize) % GRID_STEP, 0);
   assert.equal((position.y - halfSize) % GRID_STEP, 0);
   assert.equal((position.y + halfSize) % GRID_STEP, 0);
+
+  const platform = createSandboxItem("platform", "platform", 12, 18);
+  const platformPosition = snapSandboxItemPosition(platform);
+  const halfWidth = (platform.width * WORLD_SCALE) / 2;
+  const halfHeight = (platform.height * WORLD_SCALE) / 2;
+  assert.equal((platformPosition.x - halfWidth) % GRID_STEP, 0);
+  assert.equal((platformPosition.x + halfWidth) % GRID_STEP, 0);
+  assert.equal((platformPosition.y - halfHeight) % GRID_STEP, 0);
+  assert.equal((platformPosition.y + halfHeight) % GRID_STEP, 0);
+
+  const incline = createSandboxItem("incline", "incline", 12, 18);
+  incline.angle = 30;
+  const inclinePosition = snapSandboxItemPosition(incline);
+  const geometry = getInclineGeometry(incline);
+  assert.equal((inclinePosition.x - geometry.width / 2) % GRID_STEP, 0);
+  assert.equal((inclinePosition.x + geometry.width / 2) % GRID_STEP, 0);
+  assert.ok(Math.abs((inclinePosition.y + geometry.height / 2) % GRID_STEP) < 1e-9);
+  assert.ok(Math.abs(getItemHitbox(incline).halfWidth * Math.cos(Math.PI / 6) - geometry.width / 2) < 1e-9);
   assert.equal(createStarterSandbox().find((item) => item.id === "starter-block").type, "block");
 });
 

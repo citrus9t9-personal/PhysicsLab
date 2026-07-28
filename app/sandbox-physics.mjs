@@ -58,16 +58,45 @@ export function snapToGrid(value, step = GRID_STEP) {
   return Math.round(value / step) * step;
 }
 
-export function snapSandboxItemPosition(item, x = item.x, y = item.y) {
-  if (item.type !== "block") {
-    return { x: snapToGrid(x), y: snapToGrid(y) };
-  }
-  const gridSquares = Math.round((item.size * WORLD_SCALE) / GRID_STEP);
+function snapCenterForGridSpan(value, span) {
+  const gridSquares = Math.round(span / GRID_STEP);
   const offset = gridSquares % 2 === 0 ? 0 : GRID_STEP / 2;
+  return snapToGrid(value - offset) + offset;
+}
+
+export function getInclineGeometry(item) {
+  const width = item.size * WORLD_SCALE;
+  const angle = Math.abs(radians(item.angle));
+  const cosine = Math.max(Math.cos(angle), 0.01);
   return {
-    x: snapToGrid(x - offset) + offset,
-    y: snapToGrid(y - offset) + offset,
+    width,
+    height: Math.tan(angle) * width,
+    diagonal: width / cosine,
   };
+}
+
+export function snapSandboxItemPosition(item, x = item.x, y = item.y) {
+  if (item.type === "block") {
+    const span = item.size * WORLD_SCALE;
+    return {
+      x: snapCenterForGridSpan(x, span),
+      y: snapCenterForGridSpan(y, span),
+    };
+  }
+  if (item.type === "platform" && Math.abs(item.angle % 180) < 0.001) {
+    return {
+      x: snapCenterForGridSpan(x, (item.width ?? item.size) * WORLD_SCALE),
+      y: snapCenterForGridSpan(y, (item.height ?? 1) * WORLD_SCALE),
+    };
+  }
+  if (item.type === "incline") {
+    const geometry = getInclineGeometry(item);
+    return {
+      x: snapCenterForGridSpan(x, geometry.width),
+      y: snapToGrid(y + geometry.height / 2) - geometry.height / 2,
+    };
+  }
+  return { x: snapToGrid(x), y: snapToGrid(y) };
 }
 
 export function createSandboxItem(type, id, x = SANDBOX_WORLD_WIDTH / 2, y = GROUND_Y - 80) {
@@ -130,19 +159,16 @@ export function createSandboxItem(type, id, x = SANDBOX_WORLD_WIDTH / 2, y = GRO
 }
 
 export function createStarterSandbox() {
-  const block = createSandboxItem("block", "starter-block", 410, 450);
-  const alignedBlock = { ...block, ...snapSandboxItemPosition(block) };
   return [
     createSandboxItem("gravity-region", "starter-gravity", 430, 450),
     createSandboxItem("platform", "starter-platform", 430, 482.5),
     createSandboxItem("incline", "starter-incline", 468, 470),
-    {
-      ...alignedBlock,
-      initialX: alignedBlock.x,
-      initialY: alignedBlock.y,
-    },
+    createSandboxItem("block", "starter-block", 410, 450),
     createSandboxItem("ball", "starter-ball", 435, 450),
-  ];
+  ].map((item) => {
+    const aligned = { ...item, ...snapSandboxItemPosition(item) };
+    return { ...aligned, initialX: aligned.x, initialY: aligned.y };
+  });
 }
 
 export function getItemHitboxes(item) {
@@ -173,7 +199,9 @@ export function getItemHitboxes(item) {
       ((item.height ?? 1) * WORLD_SCALE) / 2,
     )];
   }
-  if (item.type === "incline") return [box((item.size * WORLD_SCALE) / 2, WORLD_SCALE * 0.18, -item.angle)];
+  if (item.type === "incline") {
+    return [box(getInclineGeometry(item).diagonal / 2, WORLD_SCALE * 0.18, -item.angle)];
+  }
   if (item.type === "gravity-region") {
     return [box(
       ((item.width ?? item.size) * WORLD_SCALE) / 2,
