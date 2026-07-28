@@ -83,10 +83,13 @@ export function snapSandboxItemPosition(item, x = item.x, y = item.y) {
       y: snapCenterForGridSpan(y, span),
     };
   }
-  if (item.type === "platform" && Math.abs(item.angle % 180) < 0.001) {
+  if ((item.type === "platform" || item.type === "gravity-region") && Math.abs(item.angle % 180) < 0.001) {
     return {
       x: snapCenterForGridSpan(x, (item.width ?? item.size) * WORLD_SCALE),
-      y: snapCenterForGridSpan(y, (item.height ?? 1) * WORLD_SCALE),
+      y: snapCenterForGridSpan(
+        y,
+        (item.type === "platform" ? item.height ?? 1 : item.height ?? item.size) * WORLD_SCALE,
+      ),
     };
   }
   if (item.type === "incline") {
@@ -121,7 +124,7 @@ export function createSandboxItem(type, id, x = SANDBOX_WORLD_WIDTH / 2, y = GRO
     size: 1,
     width: 5,
     height: 5,
-    friction: 0.2,
+    friction: 0,
     restitution: 0.25,
     angle: 0,
     initialAngle: 0,
@@ -146,25 +149,25 @@ export function createSandboxItem(type, id, x = SANDBOX_WORLD_WIDTH / 2, y = GRO
     supportAirTime: 1,
   };
 
-  if (type === "ball") return { ...base, mass: 1, size: 1, vx: 3, vy: -4, initialVx: 3, initialVy: -4, restitution: 0.72 };
-  if (type === "cart") return { ...base, mass: 3, size: 2, vx: 2, initialVx: 2, friction: 0.05, restitution: 0.1 };
-  if (type === "platform") return { ...base, size: 5, width: 5, height: 1, friction: 0.25, restitution: 1 };
-  if (type === "incline") return { ...base, size: 5, angle: 28, initialAngle: 28, friction: 0.18, restitution: 1 };
+  if (type === "ball") return { ...base, mass: 1, size: 1, restitution: 0.72 };
+  if (type === "cart") return { ...base, mass: 3, size: 2, restitution: 0.1 };
+  if (type === "platform") return { ...base, size: 5, width: 5, height: 1, restitution: 1 };
+  if (type === "incline") return { ...base, size: 5, angle: 28, initialAngle: 28, restitution: 1 };
   if (type === "pulley") return { ...base, size: 2, radius: 1 };
-  if (type === "rod") return { ...base, size: 3, angle: 15, initialAngle: 15, inertia: 2, restitution: 1 };
-  if (type === "wheel") return { ...base, mass: 2, size: 2, radius: 1, inertia: 0.56, vx: 2, initialVx: 2, restitution: 0.4 };
-  if (type === "pendulum") return { ...base, mass: 1, size: 1, length: 3, angle: 24, initialAngle: 24, angularVelocity: 0 };
+  if (type === "rod") return { ...base, size: 3, inertia: 2, restitution: 1 };
+  if (type === "wheel") return { ...base, mass: 2, size: 2, radius: 1, inertia: 0.56, restitution: 0.4 };
+  if (type === "pendulum") return { ...base, mass: 1, size: 1, length: 3 };
   if (type === "gravity-region") return { ...base, size: 5, width: 8, height: 5, gravityStrength: 9.81, gravityDirection: 90 };
   return base;
 }
 
 export function createStarterSandbox() {
   return [
-    createSandboxItem("gravity-region", "starter-gravity", 430, 450),
-    createSandboxItem("platform", "starter-platform", 430, 482.5),
-    createSandboxItem("incline", "starter-incline", 468, 470),
-    createSandboxItem("block", "starter-block", 410, 450),
-    createSandboxItem("ball", "starter-ball", 435, 450),
+    createSandboxItem("gravity-region", "starter-gravity", 70, 450),
+    createSandboxItem("platform", "starter-platform", 70, 482.5),
+    createSandboxItem("incline", "starter-incline", 108, 470),
+    createSandboxItem("block", "starter-block", 50, 450),
+    createSandboxItem("ball", "starter-ball", 75, 450),
   ].map((item) => {
     const aligned = { ...item, ...snapSandboxItemPosition(item) };
     return { ...aligned, initialX: aligned.x, initialY: aligned.y };
@@ -448,6 +451,55 @@ export function findSnapPlacement(item, items, threshold = 4.2) {
   return best;
 }
 
+export function findSmoothSurfaceJoin(item, items, threshold = GRID_STEP * 2) {
+  if (!["incline", "platform"].includes(item.type)) return null;
+  let best = null;
+
+  for (const target of items) {
+    if (target.id === item.id) continue;
+    const pair = new Set([item.type, target.type]);
+    if (!pair.has("incline") || !pair.has("platform")) continue;
+    const incline = item.type === "incline" ? item : target;
+    const platform = item.type === "platform" ? item : target;
+    if (Math.abs(platform.angle % 180) > 0.001) continue;
+
+    const inclineGeometry = getInclineGeometry(incline);
+    const inclineLow = {
+      x: incline.x - inclineGeometry.width / 2,
+      y: incline.y + inclineGeometry.height / 2,
+    };
+    const platformHalfWidth = ((platform.width ?? platform.size) * WORLD_SCALE) / 2;
+    const platformTop = platform.y - ((platform.height ?? 1) * WORLD_SCALE) / 2;
+    const platformCorners = [
+      { x: platform.x - platformHalfWidth, y: platformTop },
+      { x: platform.x + platformHalfWidth, y: platformTop },
+    ];
+
+    for (const corner of platformCorners) {
+      const shift = item.type === "incline"
+        ? { x: corner.x - inclineLow.x, y: corner.y - inclineLow.y }
+        : { x: inclineLow.x - corner.x, y: inclineLow.y - corner.y };
+      const joinDistance = Math.hypot(shift.x, shift.y);
+      if (joinDistance > threshold || (best && joinDistance >= best.distance)) continue;
+      const placedItem = { ...item, x: item.x + shift.x, y: item.y + shift.y };
+      if (!placementFitsWorkspace(placedItem)) continue;
+      best = {
+        x: placedItem.x,
+        y: placedItem.y,
+        normal: { x: 0, y: -1 },
+        distance: joinDistance,
+        part: "smooth join",
+        score: joinDistance,
+        targetId: target.id,
+        targetLabel: target.label,
+        persistent: true,
+        smooth: true,
+      };
+    }
+  }
+  return best;
+}
+
 function gravityFor(item, items) {
   const region = [...items].reverse().find((candidate) => {
     if (candidate.type !== "gravity-region") return false;
@@ -494,7 +546,8 @@ function resolveStaticCollision(item, surface) {
   return manifold;
 }
 
-function attachmentPoint(item, target) {
+export function getConnectionAnchor(item, target) {
+  if (item.type === "pulley") return { x: item.x, y: item.y };
   const shape = getItemHitbox(item);
   const direction = { x: target.x - shape.x, y: target.y - shape.y };
   const unit = normalize(direction);
@@ -610,8 +663,8 @@ export function getRopeRoute(items, link) {
     .filter((stop) => stop.item?.type === "pulley");
   const firstTarget = stops[0]?.item ?? endItem;
   const lastTarget = stops.at(-1)?.item ?? startItem;
-  const start = attachmentPoint(startItem, firstTarget);
-  const end = attachmentPoint(endItem, lastTarget);
+  const start = getConnectionAnchor(startItem, firstTarget);
+  const end = getConnectionAnchor(endItem, lastTarget);
   const wraps = stops.map((stop, index) => {
     const previous = index === 0 ? start : stops[index - 1].item;
     const next = index === stops.length - 1 ? end : stops[index + 1].item;
@@ -651,8 +704,10 @@ function applySpringForces(items, links, delta) {
     const a = byId.get(link.a);
     const b = byId.get(link.b);
     if (!a || !b) continue;
-    const dx = b.x - a.x;
-    const dy = b.y - a.y;
+    const aPoint = getConnectionAnchor(a, b);
+    const bPoint = getConnectionAnchor(b, a);
+    const dx = bPoint.x - aPoint.x;
+    const dy = bPoint.y - aPoint.y;
     const centerDistance = Math.max(Math.hypot(dx, dy), 0.001);
     const stretch = centerDistance / WORLD_SCALE - link.naturalLength;
     const force = link.springConstant * stretch;
@@ -803,17 +858,16 @@ function supportAngleFor(surface) {
 }
 
 function resolveEnvironment(item, items) {
-  const boundaryIncomingSpeed = Math.hypot(item.vx, item.vy);
+  const environmentIncomingSpeed = Math.hypot(item.vx, item.vy);
   const boundary = keepInsideStage(item);
   let support = boundary.ground
-    ? { id: "world-ground", angle: 0, strength: 1, incomingSpeed: boundaryIncomingSpeed }
+    ? { id: "world-ground", angle: 0, strength: 1, incomingSpeed: environmentIncomingSpeed }
     : null;
   for (const surface of items) {
     if (surface.id === item.id) continue;
     if (surface.snapTargetId === item.id || item.snapTargetId === surface.id) continue;
     if (!STATIC_COLLIDER_TYPES.has(surface.type) && !(surface.type === "rod" && surface.anchorEnabled)) continue;
     if (surface.type === "pulley" && !surface.fixed) continue;
-    const incomingSpeed = Math.hypot(item.vx, item.vy);
     const manifold = resolveStaticCollision(item, surface);
     const surfaceAngle = supportAngleFor(surface);
     if (!manifold || manifold.normal.y <= 0.35 || surfaceAngle === null) continue;
@@ -826,7 +880,7 @@ function resolveEnvironment(item, items) {
         id: surface.id,
         angle: surfaceAngle,
         strength: manifold.normal.y,
-        incomingSpeed,
+        incomingSpeed: environmentIncomingSpeed,
       };
     }
   }

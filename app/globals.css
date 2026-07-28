@@ -2278,6 +2278,7 @@ h1 em {
 }
 
 .sandbox-run-controls .sandbox-run { min-width: 108px; background: var(--orange); }
+.sandbox-run-controls button:disabled { opacity: 0.42; cursor: default; }
 
 .sandbox-toolbar-meta {
   display: flex;
@@ -2396,17 +2397,33 @@ h1 em {
   pointer-events: none;
 }
 
-.sandbox-boundary span {
+.sandbox-left-wall,
+.sandbox-floor {
   position: absolute;
-  right: 12px;
-  bottom: 9px;
-  padding: 3px 6px;
-  background: #f8f7f1;
-  color: var(--muted);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.5rem;
-  font-weight: 800;
-  text-transform: uppercase;
+  z-index: 25;
+  background:
+    repeating-linear-gradient(
+      135deg,
+      var(--ink) 0 5px,
+      var(--green) 5px 9px
+    );
+  pointer-events: none;
+}
+
+.sandbox-left-wall {
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 12px;
+  border-right: 3px solid var(--ink);
+}
+
+.sandbox-floor {
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 12px;
+  border-top: 3px solid var(--ink);
 }
 
 .sandbox-entity {
@@ -2424,27 +2441,27 @@ h1 em {
 .sandbox-entity:focus-visible .sandbox-shape,
 .sandbox-entity.selected .sandbox-shape {
   outline: 3px solid var(--orange);
-  outline-offset: 4px;
+  outline-offset: -3px;
 }
 
 .sandbox-entity.link-start .sandbox-shape {
   outline: 4px solid var(--green);
-  outline-offset: 5px;
+  outline-offset: -4px;
 }
 
 .sandbox-entity.pulley-target .sandbox-shape {
   outline: 4px dashed var(--blue);
-  outline-offset: 6px;
+  outline-offset: -4px;
 }
 
 .sandbox-entity.snapping .sandbox-shape {
   outline: 4px solid var(--green);
-  outline-offset: 7px;
+  outline-offset: -4px;
 }
 
 .sandbox-entity.attached:not(.selected) .sandbox-shape {
   outline: 2px solid var(--green);
-  outline-offset: 4px;
+  outline-offset: -2px;
 }
 
 .sandbox-shape {

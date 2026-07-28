@@ -14,6 +14,8 @@ import {
   createSandboxItem,
   createStarterSandbox,
   findSnapPlacement,
+  findSmoothSurfaceJoin,
+  getConnectionAnchor,
   getInclineGeometry,
   getItemBounds,
   getItemHitbox,
@@ -31,6 +33,19 @@ test("sandbox exposes every requested object and connector", () => {
     SANDBOX_TOOLS.map((tool) => tool.type),
     ["block", "ball", "cart", "rod", "wheel", "pendulum", "platform", "incline", "pulley", "gravity-region", "rope", "spring"],
   );
+});
+
+test("new objects start with zero motion, friction, and optional rotation", () => {
+  for (const type of ["block", "ball", "cart", "rod", "wheel", "pendulum"]) {
+    const item = createSandboxItem(type, type);
+    assert.equal(item.vx, 0);
+    assert.equal(item.vy, 0);
+    assert.equal(item.initialVx, 0);
+    assert.equal(item.initialVy, 0);
+    assert.equal(item.friction, 0);
+    assert.equal(item.angle, 0);
+    assert.equal(item.initialAngle, 0);
+  }
 });
 
 test("the click grid rounds placement and resize coordinates consistently", () => {
@@ -73,12 +88,55 @@ test("blocks, platforms, and incline boundaries sit flush with grid lines", () =
   assert.equal((inclinePosition.x + geometry.width / 2) % GRID_STEP, 0);
   assert.ok(Math.abs((inclinePosition.y + geometry.height / 2) % GRID_STEP) < 1e-9);
   assert.ok(Math.abs(getItemHitbox(incline).halfWidth * Math.cos(Math.PI / 6) - geometry.width / 2) < 1e-9);
+
+  const region = createSandboxItem("gravity-region", "region", 12, 18);
+  const regionPosition = snapSandboxItemPosition(region);
+  const regionHalfWidth = (region.width * WORLD_SCALE) / 2;
+  const regionHalfHeight = (region.height * WORLD_SCALE) / 2;
+  assert.ok(Math.abs((regionPosition.x - regionHalfWidth) % GRID_STEP) < 1e-9);
+  assert.ok(Math.abs((regionPosition.x + regionHalfWidth) % GRID_STEP) < 1e-9);
+  assert.ok(Math.abs((regionPosition.y - regionHalfHeight) % GRID_STEP) < 1e-9);
+  assert.ok(Math.abs((regionPosition.y + regionHalfHeight) % GRID_STEP) < 1e-9);
   assert.equal(createStarterSandbox().find((item) => item.id === "starter-block").type, "block");
+});
+
+test("connection anchors use pulley centers and rectangular object edges", () => {
+  const pulley = createSandboxItem("pulley", "pulley", 50, 50);
+  const block = createSandboxItem("block", "block", 80, 50);
+  const pulleyAnchor = getConnectionAnchor(pulley, block);
+  const blockAnchor = getConnectionAnchor(block, pulley);
+
+  assert.deepEqual(pulleyAnchor, { x: 50, y: 50 });
+  assert.equal(blockAnchor.x, 80 - (block.size * WORLD_SCALE) / 2);
+  assert.equal(blockAnchor.y, 50);
+});
+
+test("inclines snap their low endpoint to a platform top without a gap", () => {
+  const platform = createSandboxItem("platform", "platform", 100, 200);
+  const incline = createSandboxItem("incline", "incline", 130, 185);
+  incline.angle = 30;
+  const join = findSmoothSurfaceJoin(incline, [platform], 30);
+  assert.ok(join);
+
+  const placed = { ...incline, x: join.x, y: join.y };
+  const geometry = getInclineGeometry(placed);
+  const lowEndpoint = {
+    x: placed.x - geometry.width / 2,
+    y: placed.y + geometry.height / 2,
+  };
+  const platformTop = platform.y - (platform.height * WORLD_SCALE) / 2;
+  const platformLeft = platform.x - (platform.width * WORLD_SCALE) / 2;
+  const platformRight = platform.x + (platform.width * WORLD_SCALE) / 2;
+
+  assert.equal(lowEndpoint.y, platformTop);
+  assert.ok(lowEndpoint.x === platformLeft || lowEndpoint.x === platformRight);
+  assert.equal(join.smooth, true);
 });
 
 test("dynamic bodies advance under gravity while carts stay on their track", () => {
   const block = createSandboxItem("block", "block", 30, 20);
   const cart = createSandboxItem("cart", "cart", 30, 50);
+  cart.vx = 2;
   const [nextBlock, nextCart] = stepSandbox([block, cart], [], 0.04);
 
   assert.ok(nextBlock.y > block.y);

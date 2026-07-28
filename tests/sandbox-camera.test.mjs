@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  bottomRightSandboxCamera,
+  bottomLeftSandboxCamera,
   cameraForZoomAtPoint,
   clampSandboxZoom,
   constrainSandboxCamera,
@@ -44,7 +44,7 @@ test("sandbox zoom cannot reveal space outside the rigid world", () => {
   );
 });
 
-test("the minimum zoom fills the viewport and the default camera shows the bottom-right wall", () => {
+test("the minimum zoom fills the viewport and the default camera shows the bottom-left wall", () => {
   const viewport = { width: 900, height: 750 };
   const world = { width: 3000, height: 3000 };
   const minimum = minimumSandboxZoom(viewport, world);
@@ -52,7 +52,7 @@ test("the minimum zoom fills the viewport and the default camera shows the botto
   assert.equal(minimum, 0.3);
   assert.equal(clampSandboxZoom(0.1, minimum), minimum);
   assert.deepEqual(
-    bottomRightSandboxCamera(viewport, world, 0.75),
-    { x: -1350, y: -1500 },
+    bottomLeftSandboxCamera(viewport, world, 0.75),
+    { x: 0, y: -1500 },
   );
 });

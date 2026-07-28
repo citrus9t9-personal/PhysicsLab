@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -23,6 +24,8 @@ import {
   createSandboxItem,
   createStarterSandbox,
   findSnapPlacement,
+  findSmoothSurfaceJoin,
+  getConnectionAnchor,
   getInclineGeometry,
   getRodAnchorPoint,
   getRopeRoute,
@@ -34,7 +37,7 @@ import {
   stepSandbox,
 } from "./sandbox-physics.mjs";
 import {
-  bottomRightSandboxCamera,
+  bottomLeftSandboxCamera,
   cameraForZoomAtPoint,
   clampSandboxZoom,
   constrainSandboxCamera,
@@ -101,6 +104,7 @@ interface SnapGuide {
   targetLabel: string;
   persistent: boolean;
   part: string;
+  smooth?: boolean;
 }
 
 const ICONS: Record<string, string> = {
@@ -190,18 +194,22 @@ function itemTransform(item: SandboxItem) {
 }
 
 function linkStyle(a: SandboxItem, b: SandboxItem) {
-  const dx = b.x - a.x;
-  const dy = b.y - a.y;
+  const start = getConnectionAnchor(a, b);
+  const end = getConnectionAnchor(b, a);
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
   return {
-    left: `${a.x * CANVAS_PIXELS_PER_UNIT}px`,
-    top: `${a.y * CANVAS_PIXELS_PER_UNIT}px`,
+    left: `${start.x * CANVAS_PIXELS_PER_UNIT}px`,
+    top: `${start.y * CANVAS_PIXELS_PER_UNIT}px`,
     width: `${Math.hypot(dx, dy) * CANVAS_PIXELS_PER_UNIT}px`,
     transform: `translateY(-50%) rotate(${Math.atan2(dy, dx)}rad)`,
   } as CSSProperties;
 }
 
 function linkLength(a: SandboxItem, b: SandboxItem) {
-  return Math.max(0.25, Math.hypot(b.x - a.x, b.y - a.y) / WORLD_SCALE);
+  const start = getConnectionAnchor(a, b);
+  const end = getConnectionAnchor(b, a);
+  return Math.max(0.25, Math.hypot(end.x - start.x, end.y - start.y) / WORLD_SCALE);
 }
 
 function ropePath(points: Array<{ x: number; y: number }>) {
@@ -227,7 +235,7 @@ function attachedDescendants(items: SandboxItem[], rootId: string) {
 
 function snapWithSlopeAlignment(item: SandboxItem, items: SandboxItem[]) {
   let alignedItem = item;
-  let snap = findSnapPlacement(alignedItem, items);
+  let snap = findSmoothSurfaceJoin(alignedItem, items) ?? findSnapPlacement(alignedItem, items);
   let target = snap ? items.find((candidate) => candidate.id === snap.targetId) ?? null : null;
 
   if (item.type === "block" && target?.type === "incline") {
@@ -267,17 +275,23 @@ export default function SandboxLab() {
   const [zoom, setZoom] = useState(DEFAULT_SANDBOX_ZOOM);
   const [camera, setCamera] = useState({ x: 0, y: 0 });
   const [isPanning, setIsPanning] = useState(false);
+  const [undoCount, setUndoCount] = useState(0);
   const stageRef = useRef<HTMLDivElement>(null);
   const counterRef = useRef(1);
   const lastFrameRef = useRef<number | null>(null);
-  const dragRef = useRef<{ id: string; offsetX: number; offsetY: number; moved: boolean } | null>(null);
+  const dragRef = useRef<{ id: string; offsetX: number; offsetY: number; moved: boolean; recorded: boolean } | null>(null);
   const resizeRef = useRef<{
     id: string;
     handle: string;
     original: SandboxItem;
+    recorded: boolean;
   } | null>(null);
   const connectorClickRef = useRef<string | null>(null);
   const itemsRef = useRef(items);
+  const linksRef = useRef(links);
+  const selectedItemIdRef = useRef(selectedItemId);
+  const selectedLinkIdRef = useRef(selectedLinkId);
+  const historyRef = useRef<Array<{ items: SandboxItem[]; links: SandboxLink[] }>>([]);
   const zoomRef = useRef(DEFAULT_SANDBOX_ZOOM);
   const cameraRef = useRef({ x: 0, y: 0 });
   const didCenterCameraRef = useRef(false);
@@ -301,6 +315,95 @@ export default function SandboxLab() {
   }, [items]);
 
   useEffect(() => {
+    linksRef.current = links;
+  }, [links]);
+
+  useEffect(() => {
+    selectedItemIdRef.current = selectedItemId;
+    selectedLinkIdRef.current = selectedLinkId;
+  }, [selectedItemId, selectedLinkId]);
+
+  const recordHistory = useCallback(() => {
+    historyRef.current.push({
+      items: itemsRef.current.map((item) => ({ ...item })),
+      links: linksRef.current.map((link) => ({
+        ...link,
+        pulleys: link.pulleys.map((pulley) => ({ ...pulley })),
+      })),
+    });
+    if (historyRef.current.length > 100) historyRef.current.shift();
+    setUndoCount(historyRef.current.length);
+  }, []);
+
+  const undo = useCallback(() => {
+    const previous = historyRef.current.pop();
+    if (!previous) return;
+    itemsRef.current = previous.items;
+    linksRef.current = previous.links;
+    setItems(previous.items);
+    setLinks(previous.links);
+    selectedItemIdRef.current = null;
+    selectedLinkIdRef.current = null;
+    setSelectedItemId(null);
+    setSelectedLinkId(null);
+    setPulleyLinkId(null);
+    setSnapGuide(null);
+    setRunning(false);
+    setUndoCount(historyRef.current.length);
+  }, []);
+
+  const deleteSelection = useCallback(() => {
+    const itemId = selectedItemIdRef.current;
+    const linkId = selectedLinkIdRef.current;
+    if (!itemId && !linkId) return;
+    recordHistory();
+    if (itemId) {
+      const nextItems = itemsRef.current
+        .filter((item) => item.id !== itemId)
+        .map((item) => item.snapTargetId === itemId
+          ? { ...item, snapTargetId: null, snapOffsetX: 0, snapOffsetY: 0 }
+          : item);
+      const nextLinks = linksRef.current
+        .filter((link) => link.a !== itemId && link.b !== itemId)
+        .map((link) => ({ ...link, pulleys: link.pulleys.filter((pulley) => pulley.id !== itemId) }));
+      itemsRef.current = nextItems;
+      linksRef.current = nextLinks;
+      setItems(nextItems);
+      setLinks(nextLinks);
+    } else if (linkId) {
+      const nextLinks = linksRef.current.filter((link) => link.id !== linkId);
+      linksRef.current = nextLinks;
+      setLinks(nextLinks);
+    }
+    selectedItemIdRef.current = null;
+    selectedLinkIdRef.current = null;
+    setSelectedItemId(null);
+    setSelectedLinkId(null);
+    setSnapGuide(null);
+    setPulleyLinkId(null);
+    setRunning(false);
+  }, [recordHistory]);
+
+  useEffect(() => {
+    const handleKeyboard = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.matches("input, textarea, select, [contenteditable='true']")) return;
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") {
+        event.preventDefault();
+        undo();
+        return;
+      }
+      if (event.key === "Backspace" || event.key === "Delete") {
+        if (!selectedItemIdRef.current && !selectedLinkIdRef.current) return;
+        event.preventDefault();
+        deleteSelection();
+      }
+    };
+    window.addEventListener("keydown", handleKeyboard);
+    return () => window.removeEventListener("keydown", handleKeyboard);
+  }, [deleteSelection, undo]);
+
+  useEffect(() => {
     if (didCenterCameraRef.current || !stageRef.current) return;
     const rect = stageRef.current.getBoundingClientRect();
     const viewport = { width: rect.width, height: rect.height };
@@ -313,7 +416,7 @@ export default function SandboxLab() {
       minimumSandboxZoom(viewport, world),
     );
     const next = constrainSandboxCamera(
-      bottomRightSandboxCamera(viewport, world, initialZoom),
+      bottomLeftSandboxCamera(viewport, world, initialZoom),
       viewport,
       world,
       initialZoom,
@@ -355,6 +458,8 @@ export default function SandboxLab() {
   }, [running, links, playbackSpeed]);
 
   const selectItem = (id: string) => {
+    selectedItemIdRef.current = id;
+    selectedLinkIdRef.current = null;
     setSelectedItemId(id);
     setSelectedLinkId(null);
     setPulleyLinkId(null);
@@ -374,7 +479,7 @@ export default function SandboxLab() {
     const created = createSandboxItem(
       type,
       `sandbox-${type}-${index}`,
-      x ?? SANDBOX_WORLD_WIDTH - 75 + (index % 4) * GRID_STEP,
+      x ?? 75 + (index % 4) * GRID_STEP,
       y ?? GROUND_Y - 75 + (index % 3) * GRID_STEP,
     ) as SandboxItem;
     const gridPosition = snapSandboxItemPosition(created, created.x, created.y);
@@ -400,6 +505,7 @@ export default function SandboxLab() {
       snapNormalX: persistent ? snap.normal.x : 0,
       snapNormalY: persistent ? snap.normal.y : -1,
     } : aligned;
+    recordHistory();
     setItems((current) => [...current, next]);
     selectItem(next.id);
     setRunning(false);
@@ -427,7 +533,7 @@ export default function SandboxLab() {
     setCamera(constrained);
   };
 
-  const resetCameraToBottomRight = (nextZoom = DEFAULT_SANDBOX_ZOOM) => {
+  const resetCameraToBottomLeft = (nextZoom = DEFAULT_SANDBOX_ZOOM) => {
     const rect = stageRef.current?.getBoundingClientRect();
     if (!rect) return;
     const viewport = { width: rect.width, height: rect.height };
@@ -438,7 +544,7 @@ export default function SandboxLab() {
     const normalizedZoom = clampSandboxZoom(nextZoom, minimumSandboxZoom(viewport, world));
     zoomRef.current = normalizedZoom;
     setZoom(normalizedZoom);
-    applyCamera(bottomRightSandboxCamera(viewport, world, normalizedZoom), normalizedZoom);
+    applyCamera(bottomLeftSandboxCamera(viewport, world, normalizedZoom), normalizedZoom);
   };
 
   const zoomAtClientPoint = (clientX: number, clientY: number, nextZoom: number) => {
@@ -600,6 +706,7 @@ export default function SandboxLab() {
   };
 
   const updateItem = (id: string, key: keyof SandboxItem, value: number | boolean) => {
+    recordHistory();
     setRunning(false);
     setItems((current) => current.map((item) => {
       if (item.id !== id) return item;
@@ -614,7 +721,8 @@ export default function SandboxLab() {
       const gridGeometryChanged =
         (next.type === "block" && key === "size") ||
         (next.type === "platform" && ["width", "height", "angle"].includes(key)) ||
-        (next.type === "incline" && ["size", "angle"].includes(key));
+        (next.type === "incline" && ["size", "angle"].includes(key)) ||
+        (next.type === "gravity-region" && ["width", "height"].includes(key));
       if (gridGeometryChanged) {
         const aligned = snapSandboxItemPosition(next, next.x, next.y);
         const positioned = clampItemToWorkspace({ ...next, ...aligned });
@@ -641,6 +749,7 @@ export default function SandboxLab() {
   };
 
   const setRodAnchor = (item: SandboxItem, position: number | null) => {
+    recordHistory();
     setRunning(false);
     setItems((current) => current.map((candidate) => {
       if (candidate.id !== item.id) return candidate;
@@ -660,26 +769,7 @@ export default function SandboxLab() {
     }));
   };
 
-  const removeSelected = () => {
-    if (selectedItemId) {
-      setItems((current) => current
-        .filter((item) => item.id !== selectedItemId)
-        .map((item) => item.snapTargetId === selectedItemId
-          ? { ...item, snapTargetId: null, snapOffsetX: 0, snapOffsetY: 0 }
-          : item));
-      setLinks((current) => current
-        .filter((link) => link.a !== selectedItemId && link.b !== selectedItemId)
-        .map((link) => ({ ...link, pulleys: link.pulleys.filter((pulley) => pulley.id !== selectedItemId) })));
-      setSelectedItemId(null);
-    }
-    if (selectedLinkId) {
-      setLinks((current) => current.filter((link) => link.id !== selectedLinkId));
-      setSelectedLinkId(null);
-    }
-    setSnapGuide(null);
-    setPulleyLinkId(null);
-    setRunning(false);
-  };
+  const removeSelected = deleteSelection;
 
   const createLink = (sourceId: string, targetId: string, type = connectorTool, pulleyIds = linkPulleyIds) => {
     if (!type || sourceId === targetId) return;
@@ -703,6 +793,7 @@ export default function SandboxLab() {
         ? Math.max(0.25, getRopeRoute(items, draft).lengthMeters)
         : linkLength(a, b),
     };
+    recordHistory();
     setLinks((current) => [...current, link]);
     setSelectedLinkId(id);
     setSelectedItemId(null);
@@ -732,6 +823,7 @@ export default function SandboxLab() {
   const addPulleyToLink = (linkId: string, pulleyId: string) => {
     const pulley = itemsById.get(pulleyId);
     if (pulley?.type !== "pulley") return;
+    recordHistory();
     setLinks((current) => current.map((link) => {
       if (link.id !== linkId || link.type !== "rope" || link.pulleys.some((stop) => stop.id === pulleyId)) return link;
       const pulleys = [...link.pulleys, { id: pulleyId, direction: 0 }];
@@ -745,6 +837,7 @@ export default function SandboxLab() {
   };
 
   const updatePulleyRoute = (linkId: string, action: "flip" | "remove") => {
+    recordHistory();
     setLinks((current) => current.map((link) => {
       if (link.id !== linkId || link.type !== "rope" || link.pulleys.length === 0) return link;
       const pulleys = link.pulleys.slice();
@@ -760,6 +853,12 @@ export default function SandboxLab() {
       const routed = { ...link, pulleys };
       return { ...routed, naturalLength: Math.max(0.25, getRopeRoute(items, routed).lengthMeters) };
     }));
+    setRunning(false);
+  };
+
+  const updateLink = (linkId: string, key: "naturalLength" | "springConstant", value: number) => {
+    recordHistory();
+    setLinks((current) => current.map((link) => link.id === linkId ? { ...link, [key]: value } : link));
     setRunning(false);
   };
 
@@ -790,7 +889,7 @@ export default function SandboxLab() {
     setRunning(false);
     selectItem(item.id);
     dragRef.current = null;
-    resizeRef.current = { id: item.id, handle, original: { ...item } };
+    resizeRef.current = { id: item.id, handle, original: { ...item }, recorded: false };
     event.currentTarget.setPointerCapture(event.pointerId);
   };
 
@@ -798,6 +897,10 @@ export default function SandboxLab() {
     if (pinchGestureRef.current) return;
     const resize = resizeRef.current;
     if (!resize) return;
+    if (!resize.recorded) {
+      recordHistory();
+      resize.recorded = true;
+    }
     const point = stageCoordinates(event.clientX, event.clientY);
     const moving = {
       x: clamp(snapToGrid(point.x), 0, SANDBOX_WORLD_WIDTH),
@@ -884,7 +987,7 @@ export default function SandboxLab() {
       if (original.type === "wheel" || original.type === "pulley") nextItem.radius = nextItem.size / 2;
     }
 
-    if (["block", "platform", "incline"].includes(nextItem.type)) {
+    if (["block", "platform", "incline", "gravity-region"].includes(nextItem.type)) {
       const aligned = snapSandboxItemPosition(nextItem, nextItem.x, nextItem.y);
       nextItem = { ...nextItem, ...aligned };
     }
@@ -920,7 +1023,13 @@ export default function SandboxLab() {
     setSnapGuide(null);
     selectItem(item.id);
     const point = stageCoordinates(event.clientX, event.clientY);
-    dragRef.current = { id: item.id, offsetX: point.x - item.x, offsetY: point.y - item.y, moved: false };
+    dragRef.current = {
+      id: item.id,
+      offsetX: point.x - item.x,
+      offsetY: point.y - item.y,
+      moved: false,
+      recorded: false,
+    };
     event.currentTarget.setPointerCapture(event.pointerId);
   };
 
@@ -940,6 +1049,10 @@ export default function SandboxLab() {
     const rawX = clamp(gridPosition.x, 0, SANDBOX_WORLD_WIDTH);
     const rawY = clamp(gridPosition.y, 0, GROUND_Y);
     if (Math.hypot(rawX - dragged.x, rawY - dragged.y) < 0.01) return;
+    if (!drag.recorded) {
+      recordHistory();
+      drag.recorded = true;
+    }
     drag.moved = true;
 
     const descendants = attachedDescendants(current, drag.id);
@@ -999,6 +1112,7 @@ export default function SandboxLab() {
       targetLabel: snap.targetLabel,
       persistent,
       part: snap.part,
+      smooth: Boolean(snap.smooth),
     } : null;
     itemsRef.current = next;
     setItems(next);
@@ -1031,12 +1145,14 @@ export default function SandboxLab() {
   };
 
   const reset = () => {
+    if (itemsRef.current.length) recordHistory();
     setItems((current) => resetSandbox(current));
     setSnapGuide(null);
     setRunning(false);
   };
 
   const loadStarter = () => {
+    recordHistory();
     setItems(createStarterSandbox());
     setLinks([]);
     setSelectedItemId(null);
@@ -1050,6 +1166,7 @@ export default function SandboxLab() {
   };
 
   const clear = () => {
+    if (itemsRef.current.length || linksRef.current.length) recordHistory();
     setItems([]);
     setLinks([]);
     setSelectedItemId(null);
@@ -1096,6 +1213,7 @@ export default function SandboxLab() {
               <button type="button" className="sandbox-run" onClick={() => setRunning((current) => !current)}>{running ? "Ⅱ Pause" : "▶ Run"}</button>
               <button type="button" onClick={() => { setRunning(false); setItems((current) => stepSandbox(current, links, 1 / 30)); }}>Step</button>
               <button type="button" onClick={reset}>Reset</button>
+              <button type="button" onClick={undo} disabled={undoCount === 0} aria-label="Undo last sandbox edit" aria-keyshortcuts="Control+Z Meta+Z">Undo</button>
             </div>
             <div className="sandbox-toolbar-meta">
               <span>{dynamicCount} moving</span>
@@ -1110,7 +1228,7 @@ export default function SandboxLab() {
                 <button type="button" onClick={() => nudgeZoom(0.8)} aria-label="Zoom out">−</button>
                 <output>{Math.round(zoom * 100)}%</output>
                 <button type="button" onClick={() => nudgeZoom(1.25)} aria-label="Zoom in">+</button>
-                <button type="button" onClick={() => resetCameraToBottomRight()} aria-label="Reset to bottom-right view">◎</button>
+                <button type="button" onClick={() => resetCameraToBottomLeft()} aria-label="Reset to bottom-left view">◎</button>
               </span>
             </div>
           </div>
@@ -1139,7 +1257,9 @@ export default function SandboxLab() {
               aria-label={`Physics sandbox canvas with a rigid ${SANDBOX_WORLD_WIDTH} by ${SANDBOX_WORLD_HEIGHT} boundary. Each grid square is one meter. Drag empty space to pan within the walls and pinch or use the mouse wheel to zoom.`}
             >
             <div className="sandbox-grid" aria-hidden="true" />
-            <div className="sandbox-boundary" aria-hidden="true"><span>Rigid world boundary</span></div>
+            <div className="sandbox-boundary" aria-hidden="true" />
+            <div className="sandbox-left-wall" aria-hidden="true" />
+            <div className="sandbox-floor" aria-hidden="true" />
             <svg className="sandbox-rope-layer" viewBox={`0 0 ${SANDBOX_WORLD_WIDTH} ${SANDBOX_WORLD_HEIGHT}`} preserveAspectRatio="none" aria-label="Rope connections">
               {ropeRoutes.map(({ link, route, a, b }) => {
                 if (!a || !b || route.points.length < 2) return null;
@@ -1254,7 +1374,7 @@ export default function SandboxLab() {
                     }}
                     aria-label={pulleyLinkId ? `Route selected rope around ${item.label}` : `Use ${item.label} for ${connectorTool} connection`}
                   />}
-                  {activeSnap && <span className="sandbox-snap-badge">{activeSnap.persistent ? "STICK" : "TEMP"} → {activeSnap.targetLabel}</span>}
+                  {activeSnap && <span className="sandbox-snap-badge">{activeSnap.smooth ? "SMOOTH JOIN" : activeSnap.persistent ? "STICK" : "TEMP"} → {activeSnap.targetLabel}</span>}
                   {!activeSnap && snapTarget && <span className="sandbox-attachment-badge">STUCK → {snapTarget.label}</span>}
                   {selectedItemId === item.id && !running && (
                     ["incline", "rod"].includes(item.type)
@@ -1293,7 +1413,7 @@ export default function SandboxLab() {
           {selectedItem ? (
             <div className="sandbox-properties">
               <div className="sandbox-selection-name"><span aria-hidden="true">{ICONS[selectedItem.type]}</span><div><strong>{selectedItem.label}</strong><small>{isFixedItem(selectedItem) ? "Anchored structure" : selectedItem.type === "pendulum" ? "Oscillating system" : "Dynamic object"}</small></div></div>
-              {selectedItem.snapTargetId && <div className="sandbox-snap-status"><span><small>Persistent snap</small><strong>Stuck to {itemsById.get(selectedItem.snapTargetId)?.label ?? "surface"}</strong></span><button type="button" onClick={() => setItems((current) => current.map((item) => item.id === selectedItem.id ? { ...item, snapTargetId: null, snapOffsetX: 0, snapOffsetY: 0 } : item))}>Detach</button></div>}
+              {selectedItem.snapTargetId && <div className="sandbox-snap-status"><span><small>Persistent snap</small><strong>Stuck to {itemsById.get(selectedItem.snapTargetId)?.label ?? "surface"}</strong></span><button type="button" onClick={() => { recordHistory(); setItems((current) => current.map((item) => item.id === selectedItem.id ? { ...item, snapTargetId: null, snapOffsetX: 0, snapOffsetY: 0 } : item)); }}>Detach</button></div>}
               {(["block", "ball", "cart", "rod", "wheel", "pendulum", "pulley"].includes(selectedItem.type)) && <NumberControl label="Mass" value={selectedItem.mass} min={0.2} max={12} step={0.1} unit="kg" onChange={(value) => updateItem(selectedItem.id, "mass", value)} />}
               {!["gravity-region", "platform"].includes(selectedItem.type) && <NumberControl label={selectedItem.type === "incline" || selectedItem.type === "rod" ? "Length" : "Size"} value={selectedItem.size} min={1} max={8} step={1} unit="m" onChange={(value) => updateItem(selectedItem.id, "size", value)} />}
               {selectedItem.type === "platform" && <><NumberControl label="Platform length" value={selectedItem.width} min={1} max={12} step={1} unit="m" onChange={(value) => updateItem(selectedItem.id, "width", value)} /><NumberControl label="Platform height" value={selectedItem.height} min={1} max={5} step={1} unit="m" onChange={(value) => updateItem(selectedItem.id, "height", value)} /></>}
@@ -1306,7 +1426,7 @@ export default function SandboxLab() {
               {selectedItem.type === "rod" && <div className="sandbox-anchor-control"><span>Anchor point</span><div><button type="button" className={!selectedItem.anchorEnabled ? "active" : ""} onClick={() => setRodAnchor(selectedItem, null)}>Free</button><button type="button" className={selectedItem.anchorEnabled && selectedItem.anchorPosition === -1 ? "active" : ""} onClick={() => setRodAnchor(selectedItem, -1)}>Left</button><button type="button" className={selectedItem.anchorEnabled && selectedItem.anchorPosition === 0 ? "active" : ""} onClick={() => setRodAnchor(selectedItem, 0)}>Center</button><button type="button" className={selectedItem.anchorEnabled && selectedItem.anchorPosition === 1 ? "active" : ""} onClick={() => setRodAnchor(selectedItem, 1)}>Right</button></div></div>}
               {selectedItem.type === "gravity-region" && <><NumberControl label="Field width" value={selectedItem.width} min={1} max={14} step={1} unit="m" onChange={(value) => updateItem(selectedItem.id, "width", value)} /><NumberControl label="Field height" value={selectedItem.height} min={1} max={12} step={1} unit="m" onChange={(value) => updateItem(selectedItem.id, "height", value)} /><NumberControl label="Gravity strength" value={selectedItem.gravityStrength} min={0} max={25} step={0.1} unit="m/s²" onChange={(value) => updateItem(selectedItem.id, "gravityStrength", value)} /><NumberControl label="Gravity direction" value={selectedItem.gravityDirection} min={-180} max={180} step={1} unit="°" onChange={(value) => updateItem(selectedItem.id, "gravityDirection", value)} /></>}
               {selectedItem.type === "pulley" && <label className="sandbox-check"><input type="checkbox" checked={selectedItem.fixed} onChange={(event) => updateItem(selectedItem.id, "fixed", event.target.checked)} /><span>Fixed pulley</span></label>}
-              <button type="button" className="sandbox-delete" onClick={removeSelected}>Remove {selectedItem.label.toLowerCase()}</button>
+              <button type="button" className="sandbox-delete" onClick={removeSelected} aria-keyshortcuts="Backspace Delete">Remove {selectedItem.label.toLowerCase()}</button>
             </div>
           ) : selectedLink ? (
             <div className="sandbox-properties">
@@ -1318,13 +1438,13 @@ export default function SandboxLab() {
                 {selectedLink.type === "rope" && selectedLink.pulleys.length > 0 && <i aria-hidden="true">→</i>}
                 <span><small>End</small><strong>{itemsById.get(selectedLink.b)?.label ?? "Missing"}</strong></span>
               </div>
-              <NumberControl label="Natural length" value={selectedLink.naturalLength} min={0.25} max={12} step={0.05} unit="m" onChange={(value) => setLinks((current) => current.map((link) => link.id === selectedLink.id ? { ...link, naturalLength: value } : link))} />
-              {selectedLink.type === "spring" && <NumberControl label="Spring constant" value={selectedLink.springConstant} min={2} max={80} step={1} unit="N/m" onChange={(value) => setLinks((current) => current.map((link) => link.id === selectedLink.id ? { ...link, springConstant: value } : link))} />}
+              <NumberControl label="Natural length" value={selectedLink.naturalLength} min={0.25} max={12} step={0.05} unit="m" onChange={(value) => updateLink(selectedLink.id, "naturalLength", value)} />
+              {selectedLink.type === "spring" && <NumberControl label="Spring constant" value={selectedLink.springConstant} min={2} max={80} step={1} unit="N/m" onChange={(value) => updateLink(selectedLink.id, "springConstant", value)} />}
               {selectedLink.type === "rope" && <div className="sandbox-route-actions">
                 <button type="button" className={pulleyLinkId === selectedLink.id ? "active" : ""} aria-pressed={pulleyLinkId === selectedLink.id} onClick={() => { setPulleyLinkId((current) => current === selectedLink.id ? null : selectedLink.id); setConnectorTool(null); setLinkStartId(null); setLinkPulleyIds([]); setRunning(false); }}>Connect to pulley</button>
                 {selectedLink.pulleys.length > 0 && <><button type="button" onClick={() => updatePulleyRoute(selectedLink.id, "flip")}>Flip last wrap</button><button type="button" onClick={() => updatePulleyRoute(selectedLink.id, "remove")}>Remove last pulley</button></>}
               </div>}
-              <button type="button" className="sandbox-delete" onClick={removeSelected}>Remove connection</button>
+              <button type="button" className="sandbox-delete" onClick={removeSelected} aria-keyshortcuts="Backspace Delete">Remove connection</button>
             </div>
           ) : <div className="sandbox-inspector-empty"><span aria-hidden="true">↖</span><strong>Select an object</strong><p>Its dimensions, motion, and connection settings will stay here beside the grid.</p></div>}
         </aside>

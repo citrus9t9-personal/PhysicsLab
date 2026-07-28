@@ -8,9 +8,9 @@ export function clampSandboxZoom(value, minimum = 0.2) {
   return clamp(value, minimum, 2.5);
 }
 
-export function bottomRightSandboxCamera(viewport, world, zoom) {
+export function bottomLeftSandboxCamera(viewport, world, zoom) {
   return {
-    x: viewport.width - world.width * zoom,
+    x: 0,
     y: viewport.height - world.height * zoom,
   };
 }
