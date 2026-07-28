@@ -58,6 +58,18 @@ export function snapToGrid(value, step = GRID_STEP) {
   return Math.round(value / step) * step;
 }
 
+export function snapSandboxItemPosition(item, x = item.x, y = item.y) {
+  if (item.type !== "block") {
+    return { x: snapToGrid(x), y: snapToGrid(y) };
+  }
+  const gridSquares = Math.round((item.size * WORLD_SCALE) / GRID_STEP);
+  const offset = gridSquares % 2 === 0 ? 0 : GRID_STEP / 2;
+  return {
+    x: snapToGrid(x - offset) + offset,
+    y: snapToGrid(y - offset) + offset,
+  };
+}
+
 export function createSandboxItem(type, id, x = SANDBOX_WORLD_WIDTH / 2, y = GROUND_Y - 80) {
   const definition = SANDBOX_TOOLS.find((tool) => tool.type === type);
   if (!definition || type === "rope" || type === "spring") {
@@ -118,11 +130,17 @@ export function createSandboxItem(type, id, x = SANDBOX_WORLD_WIDTH / 2, y = GRO
 }
 
 export function createStarterSandbox() {
+  const block = createSandboxItem("block", "starter-block", 410, 450);
+  const alignedBlock = { ...block, ...snapSandboxItemPosition(block) };
   return [
     createSandboxItem("gravity-region", "starter-gravity", 430, 450),
     createSandboxItem("platform", "starter-platform", 430, 482.5),
     createSandboxItem("incline", "starter-incline", 468, 470),
-    createSandboxItem("block", "starter-block", 410, 450),
+    {
+      ...alignedBlock,
+      initialX: alignedBlock.x,
+      initialY: alignedBlock.y,
+    },
     createSandboxItem("ball", "starter-ball", 435, 450),
   ];
 }

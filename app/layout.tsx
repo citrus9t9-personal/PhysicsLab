@@ -15,7 +15,7 @@ export async function generateMetadata(): Promise<Metadata> {
     description:
       "Run guided AP Physics 1 experiments or build drag-and-drop systems with live motion, forces, graphs, and adjustable starting conditions.",
     openGraph: {
-      title: "MotionLab — Build the Motion, Read Every Change",
+      title: "MotionLab — Interactive AP Physics Simulator",
       description:
         "Explore guided experiments or build custom physics systems in a drag-and-drop sandbox.",
       type: "website",
@@ -30,7 +30,7 @@ export async function generateMetadata(): Promise<Metadata> {
     },
     twitter: {
       card: "summary_large_image",
-      title: "MotionLab — Build the Motion, Read Every Change",
+      title: "MotionLab — Interactive AP Physics Simulator",
       description:
         "Guided AP Physics 1 experiments and a drag-and-drop sandbox with live forces, values, and graphs.",
       images: [origin + "/og-motionlab.png"],

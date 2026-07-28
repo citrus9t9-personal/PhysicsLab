@@ -12,6 +12,7 @@ import {
   clampItemToWorkspace,
   collisionManifold,
   createSandboxItem,
+  createStarterSandbox,
   findSnapPlacement,
   getItemBounds,
   getItemHitbox,
@@ -19,6 +20,7 @@ import {
   getRodAnchorPoint,
   getRopeRoute,
   resetSandbox,
+  snapSandboxItemPosition,
   snapToGrid,
   stepSandbox,
 } from "../app/sandbox-physics.mjs";
@@ -39,6 +41,20 @@ test("the click grid rounds placement and resize coordinates consistently", () =
   assert.equal(snapToGrid(12), 10);
   assert.equal(snapToGrid(13), 15);
   assert.equal(snapToGrid(31, 10), 30);
+});
+
+test("a one-by-one block occupies one grid cell instead of straddling grid lines", () => {
+  const block = createSandboxItem("block", "block", 12, 18);
+  const position = snapSandboxItemPosition(block);
+  const halfSize = (block.size * WORLD_SCALE) / 2;
+
+  assert.equal(position.x, 12.5);
+  assert.equal(position.y, 17.5);
+  assert.equal((position.x - halfSize) % GRID_STEP, 0);
+  assert.equal((position.x + halfSize) % GRID_STEP, 0);
+  assert.equal((position.y - halfSize) % GRID_STEP, 0);
+  assert.equal((position.y + halfSize) % GRID_STEP, 0);
+  assert.equal(createStarterSandbox().find((item) => item.id === "starter-block").type, "block");
 });
 
 test("dynamic bodies advance under gravity while carts stay on their track", () => {

@@ -1017,16 +1017,8 @@ export default function Home() {
           <span className="brand-mark" aria-hidden="true"><i /><i /><i /></span>
           <span>MOTION<strong>LAB</strong></span>
         </a>
-        <div className="topbar-note"><span /> AP Physics 1 · Mechanics prototype</div>
+        <div className="topbar-note"><span /> AP Physics 1</div>
       </header>
-
-      <section className="hero">
-        <div>
-          <p className="eyebrow">Interactive physics workspace / prototype 03</p>
-          <h1>Build the motion.<br /><em>Read every change.</em></h1>
-        </div>
-        <p>Create a scenario, run time forward, and inspect its motion, energy, forces, and interactive graphs at any instant.</p>
-      </section>
 
       <div className="workspace-mode" id="workspace" role="group" aria-label="Workspace mode">
         <button type="button" className={workspaceMode === "guided" ? "active" : ""} onClick={() => setWorkspaceMode("guided")} aria-pressed={workspaceMode === "guided"}><span>01—05</span><strong>Guided experiments</strong><small>Preset AP Physics scenarios</small></button>

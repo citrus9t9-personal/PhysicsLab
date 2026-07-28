@@ -28,6 +28,7 @@ import {
   isDynamicItem,
   isFixedItem,
   resetSandbox,
+  snapSandboxItemPosition,
   snapToGrid,
   stepSandbox,
 } from "./sandbox-physics.mjs";
@@ -368,12 +369,19 @@ export default function SandboxLab() {
     }
     const index = counterRef.current;
     counterRef.current += 1;
-    const raw = createSandboxItem(
+    const created = createSandboxItem(
       type,
       `sandbox-${type}-${index}`,
-      snapToGrid(x ?? SANDBOX_WORLD_WIDTH - 75 + (index % 4) * GRID_STEP),
-      snapToGrid(y ?? GROUND_Y - 75 + (index % 3) * GRID_STEP),
+      x ?? SANDBOX_WORLD_WIDTH - 75 + (index % 4) * GRID_STEP,
+      y ?? GROUND_Y - 75 + (index % 3) * GRID_STEP,
     ) as SandboxItem;
+    const gridPosition = snapSandboxItemPosition(created, created.x, created.y);
+    const positioned = clampItemToWorkspace({ ...created, ...gridPosition }) as SandboxItem;
+    const raw = {
+      ...positioned,
+      initialX: positioned.x,
+      initialY: positioned.y,
+    };
     const snapResult = snapWithSlopeAlignment(raw, itemsRef.current);
     const aligned = snapResult.item;
     const snap = snapResult.snap;
@@ -601,6 +609,14 @@ export default function SandboxLab() {
       if (key === "radius" && (item.type === "wheel" || item.type === "pulley")) next.size = Number(value) * 2;
       if (key === "width" && item.type === "platform") next.size = Number(value);
       if (key === "size" && item.type === "platform") next.width = Number(value);
+      if (key === "size" && next.type === "block") {
+        const aligned = snapSandboxItemPosition(next, next.x, next.y);
+        const positioned = clampItemToWorkspace({ ...next, ...aligned });
+        next.x = positioned.x;
+        next.y = positioned.y;
+        next.initialX = positioned.x;
+        next.initialY = positioned.y;
+      }
       if (next.type === "rod" && next.anchorEnabled && (key === "angle" || key === "size")) {
         const theta = (next.angle * Math.PI) / 180;
         const offset = next.anchorPosition * (next.size * WORLD_SCALE) / 2;
@@ -847,6 +863,10 @@ export default function SandboxLab() {
       const diameter = Math.max(GRID_STEP, snapToGrid(radius * 2));
       nextItem = { ...nextItem, size: diameter / WORLD_SCALE };
       if (original.type === "wheel" || original.type === "pulley") nextItem.radius = nextItem.size / 2;
+      if (original.type === "block") {
+        const aligned = snapSandboxItemPosition(nextItem, nextItem.x, nextItem.y);
+        nextItem = { ...nextItem, ...aligned };
+      }
     }
 
     nextItem = clampItemToWorkspace(nextItem) as SandboxItem;
@@ -892,8 +912,13 @@ export default function SandboxLab() {
     const current = itemsRef.current;
     const dragged = current.find((item) => item.id === drag.id);
     if (!dragged) return;
-    const rawX = clamp(snapToGrid(point.x - drag.offsetX), 0, SANDBOX_WORLD_WIDTH);
-    const rawY = clamp(snapToGrid(point.y - drag.offsetY), 0, GROUND_Y);
+    const gridPosition = snapSandboxItemPosition(
+      dragged,
+      point.x - drag.offsetX,
+      point.y - drag.offsetY,
+    );
+    const rawX = clamp(gridPosition.x, 0, SANDBOX_WORLD_WIDTH);
+    const rawY = clamp(gridPosition.y, 0, GROUND_Y);
     if (Math.hypot(rawX - dragged.x, rawY - dragged.y) < 0.01) return;
     drag.moved = true;
 
@@ -1020,12 +1045,7 @@ export default function SandboxLab() {
   const dynamicCount = items.filter((item) => isDynamicItem(item) && !isFixedItem(item)).length;
 
   return (
-    <section className="sandbox-lab" aria-labelledby="sandbox-title">
-      <header className="sandbox-heading">
-        <div><p className="eyebrow">Open experiment / drag + connect</p><h2 id="sandbox-title">Sandbox mode</h2></div>
-        <p>Build a system from individual parts, set its starting conditions, then run the same physics clock used by the guided experiments.</p>
-      </header>
-
+    <section className="sandbox-lab" aria-label="Sandbox">
       <div className="sandbox-workspace">
         <aside className="sandbox-palette" aria-label="Sandbox object palette">
           <div className="sandbox-panel-title"><span>Object library</span><small>Drag or tap to add</small></div>
@@ -1229,7 +1249,6 @@ export default function SandboxLab() {
                 </div>
               );
             })}
-            {items.length === 0 && <div className="sandbox-empty"><strong>Drop an object anywhere.</strong><span>Start with a block, ball, platform, or gravity region.</span></div>}
             {connectorTool && <div className="sandbox-connect-note">
               <strong>{connectorTool === "rope" ? "Rope" : "Spring"} tool armed</strong>
               <span>{!linkStartId
@@ -1245,7 +1264,7 @@ export default function SandboxLab() {
             </div>
           </div>
 
-          <div className="sandbox-stage-actions"><button type="button" onClick={loadStarter}>Load sample setup</button><button type="button" onClick={clear}>Clear canvas</button><span>Rigid 500×500 boundary · 1 square = 1 m · drag to pan · wheel or pinch to zoom.</span></div>
+          <div className="sandbox-stage-actions"><button type="button" onClick={loadStarter}>Load sample</button><button type="button" onClick={clear}>Clear</button></div>
         </div>
 
         <aside className="sandbox-inspector" aria-label="Selected item properties">

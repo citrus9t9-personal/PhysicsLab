@@ -29,8 +29,7 @@ test("server-renders the complete MotionLab simulator", async () => {
 
   const html = await response.text();
   assert.match(html, /<title>MotionLab — Interactive AP Physics Simulator<\/title>/i);
-  assert.match(html, /Build the motion\./);
-  assert.match(html, /Read every change\./);
+  assert.doesNotMatch(html, /Build the motion|Read every change|Drop an object anywhere/i);
   assert.match(html, /Kinematics/);
   assert.match(html, /Pulleys/);
   assert.match(html, /Collisions/);
