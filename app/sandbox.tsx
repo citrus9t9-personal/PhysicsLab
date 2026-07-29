@@ -32,6 +32,7 @@ import {
   isDynamicItem,
   isFixedItem,
   resetSandbox,
+  resizeSquareFromCorner,
   snapSandboxItemPosition,
   snapToGrid,
   stepSandbox,
@@ -909,7 +910,9 @@ export default function SandboxLab() {
     const original = resize.original;
     let nextItem = { ...original };
 
-    if (original.type === "platform" || original.type === "gravity-region") {
+    if (original.type === "block") {
+      nextItem = resizeSquareFromCorner(original, resize.handle, moving.x, moving.y) as SandboxItem;
+    } else if (original.type === "platform" || original.type === "gravity-region") {
       const originalWidth = (original.type === "platform" ? original.width ?? original.size : original.width ?? original.size) * WORLD_SCALE;
       const originalHeight = (original.type === "platform" ? original.height ?? 1 : original.height ?? original.size) * WORLD_SCALE;
       const theta = original.type === "platform" ? (original.angle * Math.PI) / 180 : 0;
@@ -987,7 +990,7 @@ export default function SandboxLab() {
       if (original.type === "wheel" || original.type === "pulley") nextItem.radius = nextItem.size / 2;
     }
 
-    if (["block", "platform", "incline", "gravity-region"].includes(nextItem.type)) {
+    if (["platform", "incline", "gravity-region"].includes(nextItem.type)) {
       const aligned = snapSandboxItemPosition(nextItem, nextItem.x, nextItem.y);
       nextItem = { ...nextItem, ...aligned };
     }
@@ -1382,7 +1385,7 @@ export default function SandboxLab() {
                         <button type="button" className="sandbox-resize-handle handle-start" aria-label={`Resize ${item.label} from its starting end`} onPointerDown={(event) => beginResize(event, item, "start")} onPointerMove={resizeItem} onPointerUp={endResize} onPointerCancel={endResize} />
                         <button type="button" className="sandbox-resize-handle handle-end" aria-label={`Resize ${item.label} from its ending end`} onPointerDown={(event) => beginResize(event, item, "end")} onPointerMove={resizeItem} onPointerUp={endResize} onPointerCancel={endResize} />
                       </>
-                      : item.type === "gravity-region" || item.type === "platform"
+                      : item.type === "block" || item.type === "gravity-region" || item.type === "platform"
                         ? ["nw", "ne", "sw", "se"].map((handle) => <button key={handle} type="button" className={`sandbox-resize-handle handle-${handle}`} aria-label={`Resize ${item.label} from the ${handle.toUpperCase()} corner`} onPointerDown={(event) => beginResize(event, item, handle)} onPointerMove={resizeItem} onPointerUp={endResize} onPointerCancel={endResize} />)
                         : <button type="button" className="sandbox-resize-handle handle-scale" aria-label={`Resize ${item.label}`} onPointerDown={(event) => beginResize(event, item, "scale")} onPointerMove={resizeItem} onPointerUp={endResize} onPointerCancel={endResize} />
                   )}

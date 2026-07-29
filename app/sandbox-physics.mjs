@@ -102,6 +102,33 @@ export function snapSandboxItemPosition(item, x = item.x, y = item.y) {
   return { x: snapToGrid(x), y: snapToGrid(y) };
 }
 
+export function resizeSquareFromCorner(item, handle, x, y) {
+  if (!["nw", "ne", "sw", "se"].includes(handle)) return { ...item };
+  const horizontal = rotate({ x: 1, y: 0 }, radians(item.angle ?? 0));
+  const vertical = rotate({ x: 0, y: 1 }, radians(item.angle ?? 0));
+  const signX = handle.includes("e") ? 1 : -1;
+  const signY = handle.includes("s") ? 1 : -1;
+  const originalSide = item.size * WORLD_SCALE;
+  const fixed = {
+    x: item.x - horizontal.x * signX * originalSide / 2 - vertical.x * signY * originalSide / 2,
+    y: item.y - horizontal.y * signX * originalSide / 2 - vertical.y * signY * originalSide / 2,
+  };
+  const delta = { x: x - fixed.x, y: y - fixed.y };
+  const horizontalLength = signX * dot(delta, horizontal);
+  const verticalLength = signY * dot(delta, vertical);
+  const side = Math.max(GRID_STEP, snapToGrid(Math.max(horizontalLength, verticalLength)));
+  const moving = {
+    x: fixed.x + horizontal.x * signX * side + vertical.x * signY * side,
+    y: fixed.y + horizontal.y * signX * side + vertical.y * signY * side,
+  };
+  return {
+    ...item,
+    x: (fixed.x + moving.x) / 2,
+    y: (fixed.y + moving.y) / 2,
+    size: side / WORLD_SCALE,
+  };
+}
+
 export function createSandboxItem(type, id, x = SANDBOX_WORLD_WIDTH / 2, y = GROUND_Y - 80) {
   const definition = SANDBOX_TOOLS.find((tool) => tool.type === type);
   if (!definition || type === "rope" || type === "spring") {

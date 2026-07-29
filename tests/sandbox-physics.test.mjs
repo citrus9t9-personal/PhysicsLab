@@ -23,6 +23,7 @@ import {
   getRodAnchorPoint,
   getRopeRoute,
   resetSandbox,
+  resizeSquareFromCorner,
   snapSandboxItemPosition,
   snapToGrid,
   stepSandbox,
@@ -98,6 +99,18 @@ test("blocks, platforms, and incline boundaries sit flush with grid lines", () =
   assert.ok(Math.abs((regionPosition.y - regionHalfHeight) % GRID_STEP) < 1e-9);
   assert.ok(Math.abs((regionPosition.y + regionHalfHeight) % GRID_STEP) < 1e-9);
   assert.equal(createStarterSandbox().find((item) => item.id === "starter-block").type, "block");
+});
+
+test("block corner resizing keeps the opposite corner fixed", () => {
+  const block = createSandboxItem("block", "block", 12.5, 12.5);
+  const resized = resizeSquareFromCorner(block, "se", 20, 20);
+
+  assert.equal(block.size, 1);
+  assert.equal(resized.size, 2);
+  assert.equal(resized.x, 15);
+  assert.equal(resized.y, 15);
+  assert.equal(resized.x - resized.size * WORLD_SCALE / 2, 10);
+  assert.equal(resized.y - resized.size * WORLD_SCALE / 2, 10);
 });
 
 test("connection anchors use pulley centers and rectangular object edges", () => {
