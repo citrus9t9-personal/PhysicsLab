@@ -1027,6 +1027,80 @@ function updateBlockSupport(item, support, delta) {
   }
 }
 
+function getSimpleAtwoodSystems(items, links) {
+  const byId = new Map(items.map((item) => [item.id, item]));
+  const used = new Set();
+  const systems = [];
+  for (const link of links) {
+    if (link.type !== "rope") continue;
+    const stops = pulleyStops(link);
+    if (stops.length !== 1 || used.has(link.a) || used.has(link.b)) continue;
+    const a = byId.get(link.a);
+    const b = byId.get(link.b);
+    const pulley = byId.get(stops[0].id);
+    const routeLength = getRopeRoute(items, link).length;
+    const ropeLimit = link.naturalLength * WORLD_SCALE;
+    if (
+      !a ||
+      !b ||
+      !pulley?.fixed ||
+      routeLength < ropeLimit - 0.0001 ||
+      isFixedItem(a) ||
+      isFixedItem(b) ||
+      !getPulleyRopeGuide(a, pulley, -1) ||
+      !getPulleyRopeGuide(b, pulley, 1)
+    ) {
+      continue;
+    }
+    systems.push({ a, b, link });
+    used.add(a.id);
+    used.add(b.id);
+  }
+  return systems;
+}
+
+function prepareAtwoodMotion(items, systems, delta) {
+  const participants = new Set();
+  for (const system of systems) {
+    const { a, b } = system;
+    const gravityA = gravityFor(a, items).y;
+    const gravityB = gravityFor(b, items).y;
+    const totalMass = Math.max(a.mass + b.mass, 0.01);
+    const acceleration = (b.mass * gravityB - a.mass * gravityA) / totalMass;
+    const sharedVelocity = (b.vy - a.vy) / 2;
+    let nextVelocity = sharedVelocity + acceleration * delta;
+    if (Math.abs(acceleration) < 1e-10 && Math.abs(sharedVelocity) < 1e-10) nextVelocity = 0;
+
+    const aOnGround = getItemBounds(a).bottom >= GROUND_Y - 0.000001;
+    const bOnGround = getItemBounds(b).bottom >= GROUND_Y - 0.000001;
+    if ((nextVelocity < 0 && aOnGround) || (nextVelocity > 0 && bOnGround)) nextVelocity = 0;
+
+    a.vx = 0;
+    b.vx = 0;
+    a.vy = nextVelocity === 0 ? 0 : -nextVelocity;
+    b.vy = nextVelocity;
+    participants.add(a.id);
+    participants.add(b.id);
+  }
+  return participants;
+}
+
+function syncAtwoodAfterContacts(systems) {
+  for (const { a, b } of systems) {
+    const aStopped = Math.abs(a.vy) < 1e-10;
+    const bStopped = Math.abs(b.vy) < 1e-10;
+    if (aStopped !== bStopped) {
+      a.vy = 0;
+      b.vy = 0;
+      continue;
+    }
+    const measuredVelocity = (b.vy - a.vy) / 2;
+    const sharedVelocity = Math.abs(measuredVelocity) < 1e-12 ? 0 : measuredVelocity;
+    a.vy = sharedVelocity === 0 ? 0 : -sharedVelocity;
+    b.vy = sharedVelocity;
+  }
+}
+
 function syncSnapAttachments(items) {
   const byId = new Map(items.map((item) => [item.id, item]));
   for (let pass = 0; pass < items.length; pass += 1) {
@@ -1095,6 +1169,8 @@ export function stepSandbox(items, links, deltaSeconds) {
   const supportById = new Map();
   syncSnapAttachments(next);
   applyPulleyRopeGuides(next, links);
+  const atwoodSystems = getSimpleAtwoodSystems(next, links);
+  const atwoodParticipants = prepareAtwoodMotion(next, atwoodSystems, delta);
   applySpringForces(next, links, delta);
 
   for (const item of next) {
@@ -1108,6 +1184,14 @@ export function stepSandbox(items, links, deltaSeconds) {
     }
     if (stepAnchoredRod(item, next, delta)) continue;
     if (!isDynamicItem(item)) continue;
+
+    if (atwoodParticipants.has(item.id)) {
+      item.x += item.vx * WORLD_SCALE * delta;
+      item.y += item.vy * WORLD_SCALE * delta;
+      const support = resolveEnvironment(item, next);
+      if (support) supportById.set(item.id, support);
+      continue;
+    }
 
     if (item.type !== "cart") {
       const gravity = gravityFor(item, next);
@@ -1125,8 +1209,10 @@ export function stepSandbox(items, links, deltaSeconds) {
   }
 
   applyPulleyRopeGuides(next, links);
+  syncAtwoodAfterContacts(atwoodSystems);
   solveBodyCollisions(next);
-  solveRopes(next, links);
+  const atwoodLinks = new Set(atwoodSystems.map((system) => system.link));
+  solveRopes(next, links.filter((link) => !atwoodLinks.has(link)));
   for (const item of next.filter((candidate) => isDynamicItem(candidate) && !isFixedItem(candidate))) {
     const support = resolveEnvironment(item, next) ?? supportById.get(item.id) ?? null;
     updateBlockSupport(item, support, delta);

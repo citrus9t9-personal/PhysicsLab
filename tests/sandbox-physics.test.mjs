@@ -309,6 +309,54 @@ test("pulley-guided hanging blocks stay on straight vertical rope segments", () 
   assert.equal(next.find((item) => item.id === "right").vx, 0);
 });
 
+test("balanced Atwood masses remain at rest even when one is on the ground", () => {
+  const left = createSandboxItem("block", "left", 30, 80);
+  const right = createSandboxItem("block", "right", 70, GROUND_Y - 2.5);
+  const pulley = createSandboxItem("pulley", "pulley", 50, 35);
+  const link = {
+    type: "rope",
+    a: "left",
+    b: "right",
+    naturalLength: 1,
+    pulleys: [{ id: "pulley", direction: 0 }],
+  };
+  let items = [left, right, pulley];
+  applyPulleyRopeGuides(items, [link]);
+  link.naturalLength = getRopeRoute(items, link).lengthMeters;
+  const leftY = left.y;
+  const rightY = right.y;
+
+  for (let frame = 0; frame < 120; frame += 1) items = stepSandbox(items, [link], 0.04);
+  const nextLeft = items.find((item) => item.id === "left");
+  const nextRight = items.find((item) => item.id === "right");
+  assert.equal(nextLeft.y, leftY);
+  assert.equal(nextRight.y, rightY);
+  assert.equal(nextLeft.vy, 0);
+  assert.equal(nextRight.vy, 0);
+});
+
+test("an unequal Atwood pair uses the ideal mass-difference acceleration", () => {
+  const left = createSandboxItem("block", "left", 30, 80);
+  const right = createSandboxItem("block", "right", 70, 80);
+  right.mass = 4;
+  const pulley = createSandboxItem("pulley", "pulley", 50, 35);
+  const link = {
+    type: "rope",
+    a: "left",
+    b: "right",
+    naturalLength: 1,
+    pulleys: [{ id: "pulley", direction: 0 }],
+  };
+  const items = [left, right, pulley];
+  applyPulleyRopeGuides(items, [link]);
+  link.naturalLength = getRopeRoute(items, link).lengthMeters;
+  const next = stepSandbox(items, [link], 0.04);
+  const expectedSpeed = (9.81 / 3) * 0.04;
+
+  assert.ok(Math.abs(next.find((item) => item.id === "left").vy + expectedSpeed) < 1e-9);
+  assert.ok(Math.abs(next.find((item) => item.id === "right").vy - expectedSpeed) < 1e-9);
+});
+
 test("multi-pulley rope routes preserve the visible start-to-end order", () => {
   const start = createSandboxItem("block", "start", 15, 70);
   const firstPulley = createSandboxItem("pulley", "first", 40, 35);
