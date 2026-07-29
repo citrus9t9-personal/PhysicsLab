@@ -2214,7 +2214,7 @@ h1 em {
   border-bottom: 1px solid var(--line);
   background: transparent;
   color: var(--ink);
-  cursor: grab;
+  cursor: pointer;
   display: grid;
   grid-template-columns: 31px 1fr;
   align-items: center;
@@ -2353,7 +2353,7 @@ h1 em {
   background: #dfe3de;
   overscroll-behavior: contain;
   touch-action: none;
-  cursor: grab;
+  cursor: default;
 }
 
 .sandbox-stage.panning { cursor: grabbing; }
@@ -2440,7 +2440,7 @@ h1 em {
   --counter-entity-angle: 0deg;
   position: absolute;
   z-index: 8;
-  cursor: grab;
+  cursor: pointer;
   outline: none;
   will-change: left, top;
 }

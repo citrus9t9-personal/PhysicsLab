@@ -738,7 +738,7 @@ function ropeEndpointAnchor(item, pulley, fallbackSide) {
 export function applyPulleyRopeGuides(items, links) {
   const byId = new Map(items.map((item) => [item.id, item]));
   for (const link of links) {
-    if (link.type !== "rope") continue;
+    if (link.type !== "rope" || !link.verticalSnap) continue;
     const stops = pulleyStops(link);
     if (!stops.length) continue;
     const guides = [
@@ -766,10 +766,14 @@ export function getRopeRoute(items, link) {
     .filter((stop) => stop.item?.type === "pulley");
   const firstTarget = stops[0]?.item ?? endItem;
   const lastTarget = stops.at(-1)?.item ?? startItem;
-  const start = stops.length
+  const startGuide = stops.length ? getPulleyRopeGuide(startItem, firstTarget, -1) : null;
+  const endGuide = stops.length ? getPulleyRopeGuide(endItem, lastTarget, 1) : null;
+  const startIsVertical = Boolean(link.verticalSnap || (startGuide && Math.abs(startItem.x - startGuide.x) < 0.05));
+  const endIsVertical = Boolean(link.verticalSnap || (endGuide && Math.abs(endItem.x - endGuide.x) < 0.05));
+  const start = stops.length && startIsVertical
     ? ropeEndpointAnchor(startItem, firstTarget, -1)
     : getConnectionAnchor(startItem, firstTarget);
-  const end = stops.length
+  const end = stops.length && endIsVertical
     ? ropeEndpointAnchor(endItem, lastTarget, 1)
     : getConnectionAnchor(endItem, lastTarget);
   const wraps = stops.map((stop, index) => {
@@ -1038,6 +1042,8 @@ function getSimpleAtwoodSystems(items, links) {
     const a = byId.get(link.a);
     const b = byId.get(link.b);
     const pulley = byId.get(stops[0].id);
+    const guideA = getPulleyRopeGuide(a, pulley, -1);
+    const guideB = getPulleyRopeGuide(b, pulley, 1);
     const routeLength = getRopeRoute(items, link).length;
     const ropeLimit = link.naturalLength * WORLD_SCALE;
     if (
@@ -1047,8 +1053,12 @@ function getSimpleAtwoodSystems(items, links) {
       routeLength < ropeLimit - 0.0001 ||
       isFixedItem(a) ||
       isFixedItem(b) ||
-      !getPulleyRopeGuide(a, pulley, -1) ||
-      !getPulleyRopeGuide(b, pulley, 1)
+      !guideA ||
+      !guideB ||
+      (!link.verticalSnap && (
+        Math.abs(a.x - guideA.x) >= 0.05 ||
+        Math.abs(b.x - guideB.x) >= 0.05
+      ))
     ) {
       continue;
     }

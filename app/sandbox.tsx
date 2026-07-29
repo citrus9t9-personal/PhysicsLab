@@ -99,6 +99,7 @@ interface SandboxLink {
   b: string;
   naturalLength: number;
   springConstant: number;
+  verticalSnap: boolean;
   pulleys: Array<{ id: string; direction: number }>;
 }
 
@@ -283,7 +284,17 @@ export default function SandboxLab() {
   const stageRef = useRef<HTMLDivElement>(null);
   const counterRef = useRef(1);
   const lastFrameRef = useRef<number | null>(null);
-  const dragRef = useRef<{ id: string; offsetX: number; offsetY: number; moved: boolean; recorded: boolean } | null>(null);
+  const dragRef = useRef<{
+    id: string;
+    pointerId: number;
+    startClientX: number;
+    startClientY: number;
+    offsetX: number;
+    offsetY: number;
+    active: boolean;
+    moved: boolean;
+    recorded: boolean;
+  } | null>(null);
   const resizeRef = useRef<{
     id: string;
     handle: string;
@@ -469,9 +480,27 @@ export default function SandboxLab() {
     setPulleyLinkId(null);
   };
 
+  const clearSelection = () => {
+    selectedItemIdRef.current = null;
+    selectedLinkIdRef.current = null;
+    setSelectedItemId(null);
+    setSelectedLinkId(null);
+    setPulleyLinkId(null);
+  };
+
+  const selectLink = (id: string) => {
+    const nextId = selectedLinkIdRef.current === id ? null : id;
+    selectedItemIdRef.current = null;
+    selectedLinkIdRef.current = nextId;
+    setSelectedItemId(null);
+    setSelectedLinkId(nextId);
+    setPulleyLinkId(null);
+  };
+
   const addTool = (type: string, x?: number, y?: number) => {
     if (type === "rope" || type === "spring") {
-      setConnectorTool(type);
+      const nextTool = connectorTool === type ? null : type;
+      setConnectorTool(nextTool);
       setLinkStartId(null);
       setLinkPulleyIds([]);
       setPulleyLinkId(null);
@@ -606,7 +635,7 @@ export default function SandboxLab() {
   const handleStagePointerDown = (event: PointerEvent<HTMLDivElement>) => {
     const target = event.target as HTMLElement;
     const blocksCamera = Boolean(target.closest(
-      ".sandbox-entity, .sandbox-rope, .sandbox-link, button, input, label",
+      ".sandbox-entity, .sandbox-rope, .sandbox-link, .sandbox-connect-note, button, input, label",
     ));
 
     if (event.pointerType === "touch") {
@@ -641,6 +670,7 @@ export default function SandboxLab() {
     }
 
     if (blocksCamera) return;
+    clearSelection();
     panGestureRef.current = {
       pointerId: event.pointerId,
       startX: event.clientX,
@@ -789,26 +819,21 @@ export default function SandboxLab() {
       b: targetId,
       naturalLength: 1,
       springConstant: 18,
+      verticalSnap: false,
       pulleys: type === "rope" ? pulleyIds.map((pulleyId) => ({ id: pulleyId, direction: 0 })) : [],
     };
     recordHistory();
-    let routeItems = items;
-    if (type === "rope" && draft.pulleys.length) {
-      routeItems = items.map((item) => ({ ...item }));
-      applyPulleyRopeGuides(routeItems, [draft]);
-      routeItems = routeItems.map((item, index) => item.x === items[index].x
-        ? item
-        : { ...item, initialX: item.x, initialVx: 0 });
-      itemsRef.current = routeItems;
-      setItems(routeItems);
-    }
     const link = {
       ...draft,
       naturalLength: type === "rope"
-        ? Math.max(0.25, getRopeRoute(routeItems, draft).lengthMeters)
+        ? Math.max(0.25, getRopeRoute(items, draft).lengthMeters)
         : linkLength(a, b),
     };
-    setLinks((current) => [...current, link]);
+    const nextLinks = [...linksRef.current, link];
+    linksRef.current = nextLinks;
+    setLinks(nextLinks);
+    selectedLinkIdRef.current = id;
+    selectedItemIdRef.current = null;
     setSelectedLinkId(id);
     setSelectedItemId(null);
     setConnectorTool(null);
@@ -837,13 +862,32 @@ export default function SandboxLab() {
   const addPulleyToLink = (linkId: string, pulleyId: string) => {
     const pulley = itemsById.get(pulleyId);
     if (pulley?.type !== "pulley") return;
+    const currentLink = linksRef.current.find((link) => link.id === linkId);
+    if (!currentLink || currentLink.type !== "rope" || currentLink.pulleys.some((stop) => stop.id === pulleyId)) return;
     recordHistory();
-    setLinks((current) => current.map((link) => {
-      if (link.id !== linkId || link.type !== "rope" || link.pulleys.some((stop) => stop.id === pulleyId)) return link;
-      const pulleys = [...link.pulleys, { id: pulleyId, direction: 0 }];
-      const routed = { ...link, pulleys };
-      return { ...routed, naturalLength: Math.max(0.25, getRopeRoute(items, routed).lengthMeters) };
-    }));
+    let nextItems = itemsRef.current.map((item) => ({ ...item }));
+    let routed = {
+      ...currentLink,
+      pulleys: [...currentLink.pulleys, { id: pulleyId, direction: 0 }],
+    };
+    if (routed.verticalSnap) {
+      applyPulleyRopeGuides(nextItems, [routed]);
+      const guidedIds = new Set([routed.a, routed.b]);
+      nextItems = nextItems.map((item) => guidedIds.has(item.id)
+        ? { ...item, initialX: item.x, initialY: item.y, initialVx: 0, vx: 0 }
+        : item);
+    }
+    routed = {
+      ...routed,
+      naturalLength: Math.max(0.25, getRopeRoute(nextItems, routed).lengthMeters),
+    };
+    const nextLinks = linksRef.current.map((link) => link.id === linkId ? routed : link);
+    itemsRef.current = nextItems;
+    linksRef.current = nextLinks;
+    setItems(nextItems);
+    setLinks(nextLinks);
+    selectedItemIdRef.current = null;
+    selectedLinkIdRef.current = linkId;
     setSelectedItemId(null);
     setSelectedLinkId(linkId);
     setPulleyLinkId(null);
@@ -874,6 +918,32 @@ export default function SandboxLab() {
     recordHistory();
     setLinks((current) => current.map((link) => link.id === linkId ? { ...link, [key]: value } : link));
     setRunning(false);
+  };
+
+  const setRopeVerticalSnap = (linkId: string, enabled: boolean) => {
+    const currentLink = linksRef.current.find((link) => link.id === linkId);
+    if (!currentLink || currentLink.type !== "rope") return;
+    recordHistory();
+    setRunning(false);
+
+    let nextItems = itemsRef.current.map((item) => ({ ...item }));
+    let nextLink = { ...currentLink, verticalSnap: enabled };
+    if (enabled) {
+      applyPulleyRopeGuides(nextItems, [nextLink]);
+      const guidedIds = new Set([nextLink.a, nextLink.b]);
+      nextItems = nextItems.map((item) => guidedIds.has(item.id)
+        ? { ...item, initialX: item.x, initialY: item.y, initialVx: 0, vx: 0 }
+        : item);
+    }
+    nextLink = {
+      ...nextLink,
+      naturalLength: Math.max(0.25, getRopeRoute(nextItems, nextLink).lengthMeters),
+    };
+    const nextLinks = linksRef.current.map((link) => link.id === linkId ? nextLink : link);
+    itemsRef.current = nextItems;
+    linksRef.current = nextLinks;
+    setItems(nextItems);
+    setLinks(nextLinks);
   };
 
   const handlePortDrag = (event: DragEvent<HTMLButtonElement>, id: string) => {
@@ -1020,6 +1090,31 @@ export default function SandboxLab() {
   const endResize = (event: PointerEvent<HTMLButtonElement>) => {
     event.preventDefault();
     event.stopPropagation();
+    const resize = resizeRef.current;
+    if (resize?.recorded) {
+      const affectedLinks = linksRef.current.filter((link) => link.type === "rope" && (
+        link.a === resize.id ||
+        link.b === resize.id ||
+        link.pulleys.some((pulley) => pulley.id === resize.id)
+      ));
+      if (affectedLinks.length) {
+        const affectedIds = new Set(affectedLinks.flatMap((link) => [
+          link.a,
+          link.b,
+          ...link.pulleys.map((pulley) => pulley.id),
+        ]));
+        const nextItems = itemsRef.current.map((item) => affectedIds.has(item.id)
+          ? { ...item, initialX: item.x, initialY: item.y }
+          : item);
+        const nextLinks = linksRef.current.map((link) => affectedLinks.some((candidate) => candidate.id === link.id)
+          ? { ...link, naturalLength: Math.max(0.25, getRopeRoute(nextItems, link).lengthMeters) }
+          : link);
+        itemsRef.current = nextItems;
+        linksRef.current = nextLinks;
+        setItems(nextItems);
+        setLinks(nextLinks);
+      }
+    }
     resizeRef.current = null;
   };
 
@@ -1037,14 +1132,17 @@ export default function SandboxLab() {
       return;
     }
     if ((event.target as HTMLElement).closest(".sandbox-link-port, .sandbox-resize-handle")) return;
-    setRunning(false);
     setSnapGuide(null);
     selectItem(item.id);
     const point = stageCoordinates(event.clientX, event.clientY);
     dragRef.current = {
       id: item.id,
+      pointerId: event.pointerId,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
       offsetX: point.x - item.x,
       offsetY: point.y - item.y,
+      active: false,
       moved: false,
       recorded: false,
     };
@@ -1054,7 +1152,21 @@ export default function SandboxLab() {
   const moveItem = (event: PointerEvent<HTMLDivElement>) => {
     if (pinchGestureRef.current) return;
     const drag = dragRef.current;
-    if (!drag) return;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    if (event.pointerType !== "touch" && (event.buttons & 1) === 0) {
+      dragRef.current = null;
+      setSnapGuide(null);
+      return;
+    }
+    if (!drag.active) {
+      const heldDistance = Math.hypot(
+        event.clientX - drag.startClientX,
+        event.clientY - drag.startClientY,
+      );
+      if (heldDistance < 6) return;
+      drag.active = true;
+      setRunning(false);
+    }
     const point = stageCoordinates(event.clientX, event.clientY);
     const current = itemsRef.current;
     const dragged = current.find((item) => item.id === drag.id);
@@ -1124,6 +1236,7 @@ export default function SandboxLab() {
       }
       return item;
     });
+    applyPulleyRopeGuides(next, linksRef.current);
     const guide = snap ? {
       itemId: drag.id,
       targetId: snap.targetId,
@@ -1137,15 +1250,32 @@ export default function SandboxLab() {
     setSnapGuide(guide);
   };
 
-  const endItemDrag = () => {
+  const endItemDrag = (event: PointerEvent<HTMLDivElement>) => {
     const drag = dragRef.current;
-    if (!drag) return;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    if (!drag.active || !drag.moved) {
+      setSnapGuide(null);
+      dragRef.current = null;
+      return;
+    }
     const current = itemsRef.current;
     const descendants = attachedDescendants(current, drag.id);
+    const movedIds = new Set([drag.id, ...descendants]);
+    const affectedLinks = linksRef.current.filter((link) => link.type === "rope" && (
+      movedIds.has(link.a) ||
+      movedIds.has(link.b) ||
+      link.pulleys.some((pulley) => movedIds.has(pulley.id))
+    ));
+    const affectedIds = new Set(affectedLinks.flatMap((link) => [
+      link.a,
+      link.b,
+      ...link.pulleys.map((pulley) => pulley.id),
+    ]));
     const next = current.map((item) => {
-      if (item.id !== drag.id && !descendants.has(item.id)) return item;
+      if (item.id !== drag.id && !descendants.has(item.id)) {
+        return affectedIds.has(item.id) ? { ...item, initialX: item.x, initialY: item.y } : item;
+      }
       if (item.id !== drag.id) return { ...item, initialX: item.x, initialY: item.y };
-      if (!drag.moved) return item;
       const temporary = !isFixedItem(item);
       return {
         ...item,
@@ -1156,8 +1286,13 @@ export default function SandboxLab() {
         snapOffsetY: temporary ? 0 : item.snapOffsetY,
       };
     });
+    const nextLinks = linksRef.current.map((link) => affectedLinks.some((candidate) => candidate.id === link.id)
+      ? { ...link, naturalLength: Math.max(0.25, getRopeRoute(next, link).lengthMeters) }
+      : link);
     itemsRef.current = next;
+    linksRef.current = nextLinks;
     setItems(next);
+    setLinks(nextLinks);
     setSnapGuide(null);
     dragRef.current = null;
   };
@@ -1284,7 +1419,7 @@ export default function SandboxLab() {
               {ropeRoutes.map(({ link, route, a, b }) => {
                 if (!a || !b || route.points.length < 2) return null;
                 const path = ropePath(route.points);
-                const select = () => { setSelectedLinkId(link.id); setSelectedItemId(null); setPulleyLinkId(null); };
+                const select = () => selectLink(link.id);
                 return (
                   <g
                     key={link.id}
@@ -1320,7 +1455,7 @@ export default function SandboxLab() {
               const a = itemsById.get(link.a);
               const b = itemsById.get(link.b);
               if (!a || !b) return null;
-              return <button key={link.id} type="button" className={`sandbox-link link-${link.type} ${selectedLinkId === link.id ? "selected" : ""}`} style={linkStyle(a, b)} onClick={() => { setSelectedLinkId(link.id); setSelectedItemId(null); setPulleyLinkId(null); }} aria-label={`Select ${link.type} connecting ${a.label} and ${b.label}`} />;
+              return <button key={link.id} type="button" className={`sandbox-link link-${link.type} ${selectedLinkId === link.id ? "selected" : ""}`} style={linkStyle(a, b)} onClick={() => selectLink(link.id)} aria-label={`Select ${link.type} connecting ${a.label} and ${b.label}`} />;
             })}
             {/* Pointer handlers read refs only after user input, never during this render. */}
             {/* eslint-disable-next-line react-hooks/refs */}
@@ -1443,7 +1578,7 @@ export default function SandboxLab() {
         </div>
 
         <aside className="sandbox-inspector" aria-label="Selected item properties">
-          <div className="sandbox-panel-title"><span>Properties</span><small>{selectedItem ? selectedItem.label : selectedLink?.type ?? "Select an object"}</small>{(selectedItem || selectedLink) && <button type="button" onClick={() => { setSelectedItemId(null); setSelectedLinkId(null); setPulleyLinkId(null); }} aria-label="Clear selected properties">×</button>}</div>
+          <div className="sandbox-panel-title"><span>Properties</span><small>{selectedItem ? selectedItem.label : selectedLink?.type ?? "Select an object"}</small>{(selectedItem || selectedLink) && <button type="button" onClick={clearSelection} aria-label="Clear selected properties">×</button>}</div>
           {selectedItem ? (
             <div className="sandbox-properties">
               <div className="sandbox-selection-name"><span aria-hidden="true">{ICONS[selectedItem.type]}</span><div><strong>{selectedItem.label}</strong><small>{isFixedItem(selectedItem) ? "Anchored structure" : selectedItem.type === "pendulum" ? "Oscillating system" : "Dynamic object"}</small></div></div>
@@ -1474,6 +1609,7 @@ export default function SandboxLab() {
               </div>
               <NumberControl label="Natural length" value={selectedLink.naturalLength} min={0.25} max={12} step={0.05} unit="m" onChange={(value) => updateLink(selectedLink.id, "naturalLength", value)} />
               {selectedLink.type === "spring" && <NumberControl label="Spring constant" value={selectedLink.springConstant} min={2} max={80} step={1} unit="N/m" onChange={(value) => updateLink(selectedLink.id, "springConstant", value)} />}
+              {selectedLink.type === "rope" && <label className="sandbox-check"><input type="checkbox" checked={selectedLink.verticalSnap} onChange={(event) => setRopeVerticalSnap(selectedLink.id, event.target.checked)} /><span>Auto-snap hanging ends vertically</span></label>}
               {selectedLink.type === "rope" && <div className="sandbox-route-actions">
                 <button type="button" className={pulleyLinkId === selectedLink.id ? "active" : ""} aria-pressed={pulleyLinkId === selectedLink.id} onClick={() => { setPulleyLinkId((current) => current === selectedLink.id ? null : selectedLink.id); setConnectorTool(null); setLinkStartId(null); setLinkPulleyIds([]); setRunning(false); }}>Connect to pulley</button>
                 {selectedLink.pulleys.length > 0 && <><button type="button" onClick={() => updatePulleyRoute(selectedLink.id, "flip")}>Flip last wrap</button><button type="button" onClick={() => updatePulleyRoute(selectedLink.id, "remove")}>Remove last pulley</button></>}

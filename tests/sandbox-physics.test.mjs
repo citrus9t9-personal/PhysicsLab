@@ -266,9 +266,11 @@ test("ropes attach at object surfaces and wrap around a pulley rim", () => {
   const route = getRopeRoute([start, end, pulley], link);
   const pulleyRadius = getItemHitbox(pulley).radius;
 
-  assert.equal(route.points[0].x, start.x);
+  assert.ok(route.points[0].x > start.x);
+  assert.ok(route.points[0].x < pulley.x);
   assert.ok(route.points[0].y < start.y);
-  assert.equal(route.points.at(-1).x, end.x);
+  assert.ok(route.points.at(-1).x < end.x);
+  assert.ok(route.points.at(-1).x > pulley.x);
   assert.ok(route.points.at(-1).y < end.y);
   assert.equal(route.wraps.length, 1);
   assert.ok(route.points.some((point) => point.y < pulley.y - pulleyRadius));
@@ -290,6 +292,7 @@ test("pulley-guided hanging blocks stay on straight vertical rope segments", () 
     a: "left",
     b: "right",
     naturalLength: 20,
+    verticalSnap: true,
     pulleys: [{ id: "pulley", direction: 0 }],
   };
   const items = [left, right, pulley];
@@ -309,6 +312,29 @@ test("pulley-guided hanging blocks stay on straight vertical rope segments", () 
   assert.equal(next.find((item) => item.id === "right").vx, 0);
 });
 
+test("vertical pulley guides only move endpoints when auto-snap is enabled", () => {
+  const left = createSandboxItem("block", "left", 30, 80);
+  const right = createSandboxItem("block", "right", 70, 80);
+  const pulley = createSandboxItem("pulley", "pulley", 50, 35);
+  const link = {
+    type: "rope",
+    a: "left",
+    b: "right",
+    naturalLength: 20,
+    verticalSnap: false,
+    pulleys: [{ id: "pulley", direction: 0 }],
+  };
+  const items = [left, right, pulley];
+  const originalX = [left.x, right.x];
+
+  applyPulleyRopeGuides(items, [link]);
+  assert.deepEqual([left.x, right.x], originalX);
+
+  link.verticalSnap = true;
+  applyPulleyRopeGuides(items, [link]);
+  assert.notDeepEqual([left.x, right.x], originalX);
+});
+
 test("balanced Atwood masses remain at rest even when one is on the ground", () => {
   const left = createSandboxItem("block", "left", 30, 80);
   const right = createSandboxItem("block", "right", 70, GROUND_Y - 2.5);
@@ -318,6 +344,7 @@ test("balanced Atwood masses remain at rest even when one is on the ground", () 
     a: "left",
     b: "right",
     naturalLength: 1,
+    verticalSnap: true,
     pulleys: [{ id: "pulley", direction: 0 }],
   };
   let items = [left, right, pulley];
@@ -345,6 +372,7 @@ test("an unequal Atwood pair uses the ideal mass-difference acceleration", () =>
     a: "left",
     b: "right",
     naturalLength: 1,
+    verticalSnap: true,
     pulleys: [{ id: "pulley", direction: 0 }],
   };
   const items = [left, right, pulley];
