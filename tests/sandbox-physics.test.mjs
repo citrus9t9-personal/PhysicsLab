@@ -5,10 +5,14 @@ import {
   CANVAS_PIXELS_PER_UNIT,
   GRID_STEP,
   GROUND_Y,
+  LEFT_WALL_X,
+  RIGHT_WALL_X,
   SANDBOX_WORLD_HEIGHT,
   SANDBOX_WORLD_WIDTH,
   SANDBOX_TOOLS,
+  WALL_THICKNESS,
   WORLD_SCALE,
+  applyPulleyRopeGuides,
   clampItemToWorkspace,
   collisionManifold,
   createSandboxItem,
@@ -23,6 +27,7 @@ import {
   getRodAnchorPoint,
   getRopeRoute,
   resetSandbox,
+  resizePendulumFromBob,
   resizeSquareFromCorner,
   snapSandboxItemPosition,
   snapToGrid,
@@ -54,6 +59,10 @@ test("the click grid rounds placement and resize coordinates consistently", () =
   assert.equal(WORLD_SCALE, GRID_STEP);
   assert.equal(SANDBOX_WORLD_WIDTH, 500);
   assert.equal(SANDBOX_WORLD_HEIGHT, 500);
+  assert.equal(WALL_THICKNESS, GRID_STEP * 2);
+  assert.equal(LEFT_WALL_X, 10);
+  assert.equal(RIGHT_WALL_X, 490);
+  assert.equal(GROUND_Y, 490);
   assert.equal(CANVAS_PIXELS_PER_UNIT, 6);
   assert.equal(snapToGrid(12), 10);
   assert.equal(snapToGrid(13), 15);
@@ -146,6 +155,30 @@ test("inclines snap their low endpoint to a platform top without a gap", () => {
   assert.equal(join.smooth, true);
 });
 
+test("inclines can join either platform height and sit flush on the ground", () => {
+  const platform = createSandboxItem("platform", "platform", 150, 150);
+  const incline = createSandboxItem("incline", "incline", 110, 170);
+  incline.angle = 30;
+  const geometry = getInclineGeometry(incline);
+  incline.x = platform.x - platform.width * WORLD_SCALE / 2 - geometry.width / 2 + 2;
+  incline.y = platform.y - platform.height * WORLD_SCALE / 2 + geometry.height / 2 + 2;
+  const join = findSmoothSurfaceJoin(incline, [platform], 10);
+  const placed = { ...incline, x: join.x, y: join.y };
+  const placedGeometry = getInclineGeometry(placed);
+  const high = {
+    x: placed.x + placedGeometry.width / 2,
+    y: placed.y - placedGeometry.height / 2,
+  };
+  const platformLeft = platform.x - platform.width * WORLD_SCALE / 2;
+  const platformTop = platform.y - platform.height * WORLD_SCALE / 2;
+
+  assert.equal(high.x, platformLeft);
+  assert.equal(high.y, platformTop);
+
+  const grounded = clampItemToWorkspace({ ...incline, y: GROUND_Y });
+  assert.equal(getItemBounds(grounded).bottom, GROUND_Y);
+});
+
 test("dynamic bodies advance under gravity while carts stay on their track", () => {
   const block = createSandboxItem("block", "block", 30, 20);
   const cart = createSandboxItem("cart", "cart", 30, 50);
@@ -233,8 +266,10 @@ test("ropes attach at object surfaces and wrap around a pulley rim", () => {
   const route = getRopeRoute([start, end, pulley], link);
   const pulleyRadius = getItemHitbox(pulley).radius;
 
-  assert.ok(route.points[0].x > start.x);
-  assert.ok(route.points.at(-1).x < end.x);
+  assert.equal(route.points[0].x, start.x);
+  assert.ok(route.points[0].y < start.y);
+  assert.equal(route.points.at(-1).x, end.x);
+  assert.ok(route.points.at(-1).y < end.y);
   assert.equal(route.wraps.length, 1);
   assert.ok(route.points.some((point) => point.y < pulley.y - pulleyRadius));
   for (const point of route.points.slice(1, -1)) {
@@ -243,6 +278,35 @@ test("ropes attach at object surfaces and wrap around a pulley rim", () => {
       assert.ok(rimDistance >= pulleyRadius - 0.01);
     }
   }
+});
+
+test("pulley-guided hanging blocks stay on straight vertical rope segments", () => {
+  const left = createSandboxItem("block", "left", 30, 80);
+  const right = createSandboxItem("block", "right", 70, 80);
+  right.mass = 2;
+  const pulley = createSandboxItem("pulley", "pulley", 50, 35);
+  const link = {
+    type: "rope",
+    a: "left",
+    b: "right",
+    naturalLength: 20,
+    pulleys: [{ id: "pulley", direction: 0 }],
+  };
+  const items = [left, right, pulley];
+  applyPulleyRopeGuides(items, [link]);
+  const leftX = left.x;
+  const rightX = right.x;
+  const route = getRopeRoute(items, link);
+
+  assert.ok(Math.abs(route.points[0].x - route.wraps[0].entry.x) < 1e-6);
+  assert.ok(Math.abs(route.points.at(-1).x - route.wraps[0].exit.x) < 1e-6);
+
+  let next = items;
+  for (let frame = 0; frame < 20; frame += 1) next = stepSandbox(next, [link], 0.04);
+  assert.ok(Math.abs(next.find((item) => item.id === "left").x - leftX) < 1e-9);
+  assert.ok(Math.abs(next.find((item) => item.id === "right").x - rightX) < 1e-9);
+  assert.equal(next.find((item) => item.id === "left").vx, 0);
+  assert.equal(next.find((item) => item.id === "right").vx, 0);
 });
 
 test("multi-pulley rope routes preserve the visible start-to-end order", () => {
@@ -300,8 +364,8 @@ test("every edge of the sandbox is a rigid elastic wall", () => {
   };
   const radius = getItemHitbox(createSandboxItem("ball", "measure")).radius;
 
-  assert.ok(reflect("left", radius - 0.1, 100, -2, 0).vx > 0);
-  assert.ok(reflect("right", SANDBOX_WORLD_WIDTH - radius + 0.1, 100, 2, 0).vx < 0);
+  assert.ok(reflect("left", LEFT_WALL_X + radius - 0.1, 100, -2, 0).vx > 0);
+  assert.ok(reflect("right", RIGHT_WALL_X - radius + 0.1, 100, 2, 0).vx < 0);
   assert.ok(reflect("top", 100, radius - 0.1, 0, -2).vy > 0);
   assert.ok(reflect("bottom", 100, GROUND_Y - radius + 0.1, 0, 2).vy < 0);
 });
@@ -395,7 +459,7 @@ test("workspace bounds place visible hitboxes exactly against the ground", () =>
   const hitbox = getItemHitbox(placed);
 
   assert.equal(hitbox.y + hitbox.radius, GROUND_Y);
-  assert.ok(placed.x > 0 && placed.x < SANDBOX_WORLD_WIDTH);
+  assert.ok(placed.x > LEFT_WALL_X && placed.x < RIGHT_WALL_X);
 });
 
 test("circle and rotated-surface snaps also stop at exact hitbox contact", () => {
@@ -452,6 +516,16 @@ test("compound and field objects expose their own hitbox geometry", () => {
   assert.deepEqual(getItemHitboxes(pendulum).map((shape) => shape.part), ["bob", "arm", "pivot"]);
   assert.equal(getItemHitbox(region).part, "field");
   assert.notEqual(getItemHitbox(region).halfWidth, getItemHitbox(region).halfHeight);
+});
+
+test("pendulum bob resizing changes only its grid-based arm length", () => {
+  const pendulum = createSandboxItem("pendulum", "pendulum", 50, 50);
+  const resized = resizePendulumFromBob(pendulum, 50, 70);
+
+  assert.equal(resized.x, pendulum.x);
+  assert.equal(resized.y, pendulum.y);
+  assert.equal(resized.size, pendulum.size);
+  assert.equal(resized.length, 4);
 });
 
 test("stretched springs accelerate connected objects toward each other", () => {

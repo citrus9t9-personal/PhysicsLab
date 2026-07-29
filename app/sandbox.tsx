@@ -19,7 +19,9 @@ import {
   SANDBOX_WORLD_HEIGHT,
   SANDBOX_WORLD_WIDTH,
   SANDBOX_TOOLS,
+  WALL_THICKNESS,
   WORLD_SCALE,
+  applyPulleyRopeGuides,
   clampItemToWorkspace,
   createSandboxItem,
   createStarterSandbox,
@@ -32,6 +34,7 @@ import {
   isDynamicItem,
   isFixedItem,
   resetSandbox,
+  resizePendulumFromBob,
   resizeSquareFromCorner,
   snapSandboxItemPosition,
   snapToGrid,
@@ -180,8 +183,8 @@ function entityDimensions(item: SandboxItem) {
     };
   }
   if (item.type === "pendulum") {
-    const bob = Math.max(item.size * WORLD_SCALE * CANVAS_PIXELS_PER_UNIT, 28);
-    const arm = Math.max(item.length * WORLD_SCALE * CANVAS_PIXELS_PER_UNIT, 42);
+    const bob = item.size * WORLD_SCALE * CANVAS_PIXELS_PER_UNIT;
+    const arm = item.length * WORLD_SCALE * CANVAS_PIXELS_PER_UNIT;
     return { width: `${bob}px`, height: `${arm + bob / 2}px` };
   }
   const size = Math.max(item.size * WORLD_SCALE * CANVAS_PIXELS_PER_UNIT, 28);
@@ -788,13 +791,23 @@ export default function SandboxLab() {
       springConstant: 18,
       pulleys: type === "rope" ? pulleyIds.map((pulleyId) => ({ id: pulleyId, direction: 0 })) : [],
     };
+    recordHistory();
+    let routeItems = items;
+    if (type === "rope" && draft.pulleys.length) {
+      routeItems = items.map((item) => ({ ...item }));
+      applyPulleyRopeGuides(routeItems, [draft]);
+      routeItems = routeItems.map((item, index) => item.x === items[index].x
+        ? item
+        : { ...item, initialX: item.x, initialVx: 0 });
+      itemsRef.current = routeItems;
+      setItems(routeItems);
+    }
     const link = {
       ...draft,
       naturalLength: type === "rope"
-        ? Math.max(0.25, getRopeRoute(items, draft).lengthMeters)
+        ? Math.max(0.25, getRopeRoute(routeItems, draft).lengthMeters)
         : linkLength(a, b),
     };
-    recordHistory();
     setLinks((current) => [...current, link]);
     setSelectedLinkId(id);
     setSelectedItemId(null);
@@ -912,6 +925,8 @@ export default function SandboxLab() {
 
     if (original.type === "block") {
       nextItem = resizeSquareFromCorner(original, resize.handle, moving.x, moving.y) as SandboxItem;
+    } else if (original.type === "pendulum") {
+      nextItem = resizePendulumFromBob(original, moving.x, moving.y) as SandboxItem;
     } else if (original.type === "platform" || original.type === "gravity-region") {
       const originalWidth = (original.type === "platform" ? original.width ?? original.size : original.width ?? original.size) * WORLD_SCALE;
       const originalHeight = (original.type === "platform" ? original.height ?? 1 : original.height ?? original.size) * WORLD_SCALE;
@@ -1255,6 +1270,7 @@ export default function SandboxLab() {
                 transform: `translate(${camera.x}px, ${camera.y}px) scale(${zoom})`,
                 "--sandbox-grid-step": `${GRID_STEP * CANVAS_PIXELS_PER_UNIT}px`,
                 "--sandbox-major-grid-step": `${GRID_STEP * CANVAS_PIXELS_PER_UNIT * 5}px`,
+                "--sandbox-wall-thickness": `${WALL_THICKNESS * CANVAS_PIXELS_PER_UNIT}px`,
               } as CSSProperties}
               role="application"
               aria-label={`Physics sandbox canvas with a rigid ${SANDBOX_WORLD_WIDTH} by ${SANDBOX_WORLD_HEIGHT} boundary. Each grid square is one meter. Drag empty space to pan within the walls and pinch or use the mouse wheel to zoom.`}
@@ -1262,6 +1278,7 @@ export default function SandboxLab() {
             <div className="sandbox-grid" aria-hidden="true" />
             <div className="sandbox-boundary" aria-hidden="true" />
             <div className="sandbox-left-wall" aria-hidden="true" />
+            <div className="sandbox-right-wall" aria-hidden="true" />
             <div className="sandbox-floor" aria-hidden="true" />
             <svg className="sandbox-rope-layer" viewBox={`0 0 ${SANDBOX_WORLD_WIDTH} ${SANDBOX_WORLD_HEIGHT}`} preserveAspectRatio="none" aria-label="Rope connections">
               {ropeRoutes.map(({ link, route, a, b }) => {
@@ -1328,9 +1345,9 @@ export default function SandboxLab() {
                     "--pendulum-angle": `${item.angle}deg`,
                     "--incline-angle": `${-item.angle}deg`,
                     "--incline-hitbox-length": `${getInclineGeometry(item).diagonal * CANVAS_PIXELS_PER_UNIT}px`,
-                    "--pendulum-arm-length": `${Math.max(item.length * WORLD_SCALE * CANVAS_PIXELS_PER_UNIT, 42)}px`,
-                    "--pendulum-bob-size": `${Math.max(item.size * WORLD_SCALE * CANVAS_PIXELS_PER_UNIT, 28)}px`,
-                    "--pendulum-bob-offset": `${-Math.max(item.size * WORLD_SCALE * CANVAS_PIXELS_PER_UNIT, 28) / 2}px`,
+                    "--pendulum-arm-length": `${item.length * WORLD_SCALE * CANVAS_PIXELS_PER_UNIT}px`,
+                    "--pendulum-bob-size": `${item.size * WORLD_SCALE * CANVAS_PIXELS_PER_UNIT}px`,
+                    "--pendulum-bob-offset": `${-(item.size * WORLD_SCALE * CANVAS_PIXELS_PER_UNIT) / 2}px`,
                   } as CSSProperties}
                   role="button"
                   tabIndex={0}
@@ -1380,7 +1397,21 @@ export default function SandboxLab() {
                   {activeSnap && <span className="sandbox-snap-badge">{activeSnap.smooth ? "SMOOTH JOIN" : activeSnap.persistent ? "STICK" : "TEMP"} → {activeSnap.targetLabel}</span>}
                   {!activeSnap && snapTarget && <span className="sandbox-attachment-badge">STUCK → {snapTarget.label}</span>}
                   {selectedItemId === item.id && !running && (
-                    ["incline", "rod"].includes(item.type)
+                    item.type === "pendulum"
+                      ? <button
+                        type="button"
+                        className="sandbox-resize-handle handle-pendulum"
+                        style={{
+                          left: `calc(50% + ${-Math.sin(item.angle * Math.PI / 180) * item.length * WORLD_SCALE * CANVAS_PIXELS_PER_UNIT}px)`,
+                          top: `${Math.cos(item.angle * Math.PI / 180) * item.length * WORLD_SCALE * CANVAS_PIXELS_PER_UNIT}px`,
+                        }}
+                        aria-label={`Resize ${item.label} from its bob`}
+                        onPointerDown={(event) => beginResize(event, item, "pendulum-length")}
+                        onPointerMove={resizeItem}
+                        onPointerUp={endResize}
+                        onPointerCancel={endResize}
+                      />
+                      : ["incline", "rod"].includes(item.type)
                       ? <>
                         <button type="button" className="sandbox-resize-handle handle-start" aria-label={`Resize ${item.label} from its starting end`} onPointerDown={(event) => beginResize(event, item, "start")} onPointerMove={resizeItem} onPointerUp={endResize} onPointerCancel={endResize} />
                         <button type="button" className="sandbox-resize-handle handle-end" aria-label={`Resize ${item.label} from its ending end`} onPointerDown={(event) => beginResize(event, item, "end")} onPointerMove={resizeItem} onPointerUp={endResize} onPointerCancel={endResize} />

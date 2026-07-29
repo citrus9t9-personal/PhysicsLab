@@ -3,7 +3,10 @@ export const WORLD_SCALE = GRID_STEP;
 export const SANDBOX_WORLD_WIDTH = 500;
 export const SANDBOX_WORLD_HEIGHT = 500;
 export const CANVAS_PIXELS_PER_UNIT = 6;
-export const GROUND_Y = SANDBOX_WORLD_HEIGHT;
+export const WALL_THICKNESS = GRID_STEP * 2;
+export const LEFT_WALL_X = WALL_THICKNESS;
+export const RIGHT_WALL_X = SANDBOX_WORLD_WIDTH - WALL_THICKNESS;
+export const GROUND_Y = SANDBOX_WORLD_HEIGHT - WALL_THICKNESS;
 
 export const SANDBOX_TOOLS = [
   { type: "block", label: "Block", category: "Objects", description: "Adjustable mass, size, velocity, and friction." },
@@ -21,6 +24,7 @@ export const SANDBOX_TOOLS = [
 ];
 
 const DYNAMIC_TYPES = new Set(["block", "ball", "cart", "rod", "wheel"]);
+const HANGING_ROPE_TYPES = new Set(["block", "ball", "wheel"]);
 const STATIC_COLLIDER_TYPES = new Set(["platform", "incline", "pulley", "pendulum"]);
 const TAU = Math.PI * 2;
 const CONTACT_EPSILON = 1e-9;
@@ -129,6 +133,11 @@ export function resizeSquareFromCorner(item, handle, x, y) {
   };
 }
 
+export function resizePendulumFromBob(item, x, y) {
+  const length = Math.max(GRID_STEP, snapToGrid(Math.hypot(x - item.x, y - item.y)));
+  return { ...item, length: length / WORLD_SCALE };
+}
+
 export function createSandboxItem(type, id, x = SANDBOX_WORLD_WIDTH / 2, y = GROUND_Y - 80) {
   const definition = SANDBOX_TOOLS.find((tool) => tool.type === type);
   if (!definition || type === "rope" || type === "spring") {
@@ -189,12 +198,14 @@ export function createSandboxItem(type, id, x = SANDBOX_WORLD_WIDTH / 2, y = GRO
 }
 
 export function createStarterSandbox() {
+  const incline = createSandboxItem("incline", "starter-incline", 108, 0);
+  incline.y = GROUND_Y - getInclineGeometry(incline).height / 2;
   return [
-    createSandboxItem("gravity-region", "starter-gravity", 70, 450),
-    createSandboxItem("platform", "starter-platform", 70, 482.5),
-    createSandboxItem("incline", "starter-incline", 108, 470),
-    createSandboxItem("block", "starter-block", 50, 450),
-    createSandboxItem("ball", "starter-ball", 75, 450),
+    createSandboxItem("gravity-region", "starter-gravity", 70, GROUND_Y - 50),
+    createSandboxItem("platform", "starter-platform", 70, GROUND_Y - 2.5),
+    incline,
+    createSandboxItem("block", "starter-block", 50, GROUND_Y - 40),
+    createSandboxItem("ball", "starter-ball", 75, GROUND_Y - 40),
   ].map((item) => {
     const aligned = { ...item, ...snapSandboxItemPosition(item) };
     return { ...aligned, initialX: aligned.x, initialY: aligned.y };
@@ -273,6 +284,15 @@ function projectionRadius(box, axis) {
 }
 
 export function getItemBounds(item) {
+  if (item.type === "incline") {
+    const geometry = getInclineGeometry(item);
+    return {
+      left: item.x - geometry.width / 2,
+      right: item.x + geometry.width / 2,
+      top: item.y - geometry.height / 2,
+      bottom: item.y + geometry.height / 2,
+    };
+  }
   return getItemHitboxes(item).reduce((bounds, shape) => {
     const extentX = shape.kind === "circle" ? shape.radius : projectionRadius(shape, { x: 1, y: 0 });
     const extentY = shape.kind === "circle" ? shape.radius : projectionRadius(shape, { x: 0, y: 1 });
@@ -288,8 +308,8 @@ export function getItemBounds(item) {
 export function clampItemToWorkspace(item) {
   const next = { ...item };
   const bounds = getItemBounds(next);
-  if (bounds.left < 0) next.x -= bounds.left;
-  if (bounds.right > SANDBOX_WORLD_WIDTH) next.x -= bounds.right - SANDBOX_WORLD_WIDTH;
+  if (bounds.left < LEFT_WALL_X) next.x += LEFT_WALL_X - bounds.left;
+  if (bounds.right > RIGHT_WALL_X) next.x -= bounds.right - RIGHT_WALL_X;
   if (bounds.top < 0) next.y -= bounds.top;
   if (bounds.bottom > GROUND_Y) next.y -= bounds.bottom - GROUND_Y;
   return next;
@@ -298,8 +318,8 @@ export function clampItemToWorkspace(item) {
 function placementFitsWorkspace(item) {
   const bounds = getItemBounds(item);
   const epsilon = 0.000001;
-  return bounds.left >= -epsilon &&
-    bounds.right <= SANDBOX_WORLD_WIDTH + epsilon &&
+  return bounds.left >= LEFT_WALL_X - epsilon &&
+    bounds.right <= RIGHT_WALL_X + epsilon &&
     bounds.top >= -epsilon &&
     bounds.bottom <= GROUND_Y + epsilon;
 }
@@ -491,10 +511,18 @@ export function findSmoothSurfaceJoin(item, items, threshold = GRID_STEP * 2) {
     if (Math.abs(platform.angle % 180) > 0.001) continue;
 
     const inclineGeometry = getInclineGeometry(incline);
-    const inclineLow = {
-      x: incline.x - inclineGeometry.width / 2,
-      y: incline.y + inclineGeometry.height / 2,
-    };
+    const inclineEndpoints = [
+      {
+        name: "low",
+        x: incline.x - inclineGeometry.width / 2,
+        y: incline.y + inclineGeometry.height / 2,
+      },
+      {
+        name: "high",
+        x: incline.x + inclineGeometry.width / 2,
+        y: incline.y - inclineGeometry.height / 2,
+      },
+    ];
     const platformHalfWidth = ((platform.width ?? platform.size) * WORLD_SCALE) / 2;
     const platformTop = platform.y - ((platform.height ?? 1) * WORLD_SCALE) / 2;
     const platformCorners = [
@@ -502,26 +530,28 @@ export function findSmoothSurfaceJoin(item, items, threshold = GRID_STEP * 2) {
       { x: platform.x + platformHalfWidth, y: platformTop },
     ];
 
-    for (const corner of platformCorners) {
-      const shift = item.type === "incline"
-        ? { x: corner.x - inclineLow.x, y: corner.y - inclineLow.y }
-        : { x: inclineLow.x - corner.x, y: inclineLow.y - corner.y };
-      const joinDistance = Math.hypot(shift.x, shift.y);
-      if (joinDistance > threshold || (best && joinDistance >= best.distance)) continue;
-      const placedItem = { ...item, x: item.x + shift.x, y: item.y + shift.y };
-      if (!placementFitsWorkspace(placedItem)) continue;
-      best = {
-        x: placedItem.x,
-        y: placedItem.y,
-        normal: { x: 0, y: -1 },
-        distance: joinDistance,
-        part: "smooth join",
-        score: joinDistance,
-        targetId: target.id,
-        targetLabel: target.label,
-        persistent: true,
-        smooth: true,
-      };
+    for (const endpoint of inclineEndpoints) {
+      for (const corner of platformCorners) {
+        const shift = item.type === "incline"
+          ? { x: corner.x - endpoint.x, y: corner.y - endpoint.y }
+          : { x: endpoint.x - corner.x, y: endpoint.y - corner.y };
+        const joinDistance = Math.hypot(shift.x, shift.y);
+        if (joinDistance > threshold || (best && joinDistance >= best.distance)) continue;
+        const placedItem = { ...item, x: item.x + shift.x, y: item.y + shift.y };
+        if (!placementFitsWorkspace(placedItem)) continue;
+        best = {
+          x: placedItem.x,
+          y: placedItem.y,
+          normal: { x: 0, y: -1 },
+          distance: joinDistance,
+          part: `${endpoint.name} smooth join`,
+          score: joinDistance,
+          targetId: target.id,
+          targetLabel: target.label,
+          persistent: true,
+          smooth: true,
+        };
+      }
     }
   }
   return best;
@@ -679,6 +709,52 @@ function pulleyStops(link) {
   ));
 }
 
+function getPulleyRopeGuide(item, pulley, fallbackSide) {
+  if (
+    !item ||
+    !pulley ||
+    pulley.type !== "pulley" ||
+    !HANGING_ROPE_TYPES.has(item.type) ||
+    item.y <= pulley.y + getItemHitbox(pulley).radius
+  ) {
+    return null;
+  }
+  const radius = getItemHitbox(pulley).radius + 0.18;
+  const side = Math.sign(item.x - pulley.x) || fallbackSide;
+  return { x: pulley.x + side * radius, side };
+}
+
+function ropeEndpointAnchor(item, pulley, fallbackSide) {
+  const guide = getPulleyRopeGuide(item, pulley, fallbackSide);
+  if (!guide) return getConnectionAnchor(item, pulley);
+  const shape = getItemHitbox(item);
+  if (shape.kind === "circle") {
+    return { x: item.x, y: shape.y - shape.radius };
+  }
+  const topCenter = rotate({ x: 0, y: -shape.halfHeight }, shape.angle);
+  return { x: shape.x + topCenter.x, y: shape.y + topCenter.y };
+}
+
+export function applyPulleyRopeGuides(items, links) {
+  const byId = new Map(items.map((item) => [item.id, item]));
+  for (const link of links) {
+    if (link.type !== "rope") continue;
+    const stops = pulleyStops(link);
+    if (!stops.length) continue;
+    const guides = [
+      { item: byId.get(link.a), pulley: byId.get(stops[0].id), fallbackSide: -1 },
+      { item: byId.get(link.b), pulley: byId.get(stops.at(-1).id), fallbackSide: 1 },
+    ];
+    for (const entry of guides) {
+      const guide = getPulleyRopeGuide(entry.item, entry.pulley, entry.fallbackSide);
+      if (!guide || isFixedItem(entry.item)) continue;
+      entry.item.x = guide.x;
+      entry.item.vx = 0;
+    }
+  }
+  return items;
+}
+
 export function getRopeRoute(items, link) {
   const byId = new Map(items.map((item) => [item.id, item]));
   const startItem = byId.get(link.a);
@@ -690,8 +766,12 @@ export function getRopeRoute(items, link) {
     .filter((stop) => stop.item?.type === "pulley");
   const firstTarget = stops[0]?.item ?? endItem;
   const lastTarget = stops.at(-1)?.item ?? startItem;
-  const start = getConnectionAnchor(startItem, firstTarget);
-  const end = getConnectionAnchor(endItem, lastTarget);
+  const start = stops.length
+    ? ropeEndpointAnchor(startItem, firstTarget, -1)
+    : getConnectionAnchor(startItem, firstTarget);
+  const end = stops.length
+    ? ropeEndpointAnchor(endItem, lastTarget, 1)
+    : getConnectionAnchor(endItem, lastTarget);
   const wraps = stops.map((stop, index) => {
     const previous = index === 0 ? start : stops[index - 1].item;
     const next = index === stops.length - 1 ? end : stops[index + 1].item;
@@ -779,6 +859,7 @@ function ropeGradients(items, link, participants) {
 
 function solveRopes(items, links) {
   const ropeLinks = links.filter((link) => link.type === "rope");
+  applyPulleyRopeGuides(items, ropeLinks);
   for (let iteration = 0; iteration < 4; iteration += 1) {
     for (const link of ropeLinks) {
       const route = getRopeRoute(items, link);
@@ -798,6 +879,7 @@ function solveRopes(items, links) {
         gradient.item.x -= inverseMass * multiplier * gradient.x;
         gradient.item.y -= inverseMass * multiplier * gradient.y;
       }
+      applyPulleyRopeGuides(items, [link]);
     }
   }
 
@@ -820,6 +902,7 @@ function solveRopes(items, links) {
       gradient.item.vy -= inverseMass * impulse * gradient.y;
     }
   }
+  applyPulleyRopeGuides(items, ropeLinks);
 }
 
 function solveBodyCollisions(items) {
@@ -855,13 +938,13 @@ function solveBodyCollisions(items) {
 function keepInsideStage(item) {
   const bounds = getItemBounds(item);
   const contacts = { left: false, right: false, top: false, ground: false };
-  if (bounds.left < 0) {
-    item.x -= bounds.left;
+  if (bounds.left < LEFT_WALL_X) {
+    item.x += LEFT_WALL_X - bounds.left;
     item.vx = Math.abs(item.vx);
     contacts.left = true;
   }
-  if (bounds.right > SANDBOX_WORLD_WIDTH) {
-    item.x -= bounds.right - SANDBOX_WORLD_WIDTH;
+  if (bounds.right > RIGHT_WALL_X) {
+    item.x -= bounds.right - RIGHT_WALL_X;
     item.vx = -Math.abs(item.vx);
     contacts.right = true;
   }
@@ -1011,6 +1094,7 @@ export function stepSandbox(items, links, deltaSeconds) {
   const next = items.map((item) => ({ ...item }));
   const supportById = new Map();
   syncSnapAttachments(next);
+  applyPulleyRopeGuides(next, links);
   applySpringForces(next, links, delta);
 
   for (const item of next) {
@@ -1040,12 +1124,14 @@ export function stepSandbox(items, links, deltaSeconds) {
     if (support) supportById.set(item.id, support);
   }
 
+  applyPulleyRopeGuides(next, links);
   solveBodyCollisions(next);
   solveRopes(next, links);
   for (const item of next.filter((candidate) => isDynamicItem(candidate) && !isFixedItem(candidate))) {
     const support = resolveEnvironment(item, next) ?? supportById.get(item.id) ?? null;
     updateBlockSupport(item, support, delta);
   }
+  applyPulleyRopeGuides(next, links);
   syncSnapAttachments(next);
   return next;
 }
