@@ -2597,6 +2597,14 @@ h1 em {
     drop-shadow(0 2px 0 var(--ink));
 }
 
+.entity-incline.flipped .sandbox-shape {
+  clip-path: polygon(0 0, 0 100%, 100% 100%);
+  filter:
+    drop-shadow(0 -2px 0 var(--ink))
+    drop-shadow(-2px 0 0 var(--ink))
+    drop-shadow(0 2px 0 var(--ink));
+}
+
 .entity-incline .sandbox-hitbox {
   left: 50%;
   right: auto;
@@ -2618,6 +2626,9 @@ h1 em {
   right: -9px;
   top: 0;
 }
+
+.entity-incline.flipped .sandbox-resize-handle.handle-start { top: 0; }
+.entity-incline.flipped .sandbox-resize-handle.handle-end { top: 100%; }
 
 .entity-rod .sandbox-shape { background: #8ab1e8; }
 

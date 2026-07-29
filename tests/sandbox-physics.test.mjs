@@ -110,6 +110,22 @@ test("blocks, platforms, and incline boundaries sit flush with grid lines", () =
   assert.equal(createStarterSandbox().find((item) => item.id === "starter-block").type, "block");
 });
 
+test("flipping an incline reverses its physical slope without changing its grid footprint", () => {
+  const incline = createSandboxItem("incline", "incline", 60, 60);
+  incline.angle = 30;
+  const forwardGeometry = getInclineGeometry(incline);
+  const forwardHitbox = getItemHitbox(incline);
+
+  incline.angle = -30;
+  const flippedGeometry = getInclineGeometry(incline);
+  const flippedHitbox = getItemHitbox(incline);
+
+  assert.deepEqual(flippedGeometry, forwardGeometry);
+  assert.equal(flippedHitbox.angle, -forwardHitbox.angle);
+  assert.equal(flippedHitbox.x, forwardHitbox.x);
+  assert.equal(flippedHitbox.y, forwardHitbox.y);
+});
+
 test("block corner resizing keeps the opposite corner fixed", () => {
   const block = createSandboxItem("block", "block", 12.5, 12.5);
   const resized = resizeSquareFromCorner(block, "se", 20, 20);

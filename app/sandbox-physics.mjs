@@ -511,15 +511,16 @@ export function findSmoothSurfaceJoin(item, items, threshold = GRID_STEP * 2) {
     if (Math.abs(platform.angle % 180) > 0.001) continue;
 
     const inclineGeometry = getInclineGeometry(incline);
+    const risesRight = incline.angle >= 0;
     const inclineEndpoints = [
       {
         name: "low",
-        x: incline.x - inclineGeometry.width / 2,
+        x: incline.x + (risesRight ? -1 : 1) * inclineGeometry.width / 2,
         y: incline.y + inclineGeometry.height / 2,
       },
       {
         name: "high",
-        x: incline.x + inclineGeometry.width / 2,
+        x: incline.x + (risesRight ? 1 : -1) * inclineGeometry.width / 2,
         y: incline.y - inclineGeometry.height / 2,
       },
     ];
