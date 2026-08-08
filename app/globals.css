@@ -2385,6 +2385,11 @@ h1 em {
     var(--sandbox-grid-step) var(--sandbox-grid-step),
     var(--sandbox-major-grid-step) var(--sandbox-major-grid-step),
     var(--sandbox-major-grid-step) var(--sandbox-major-grid-step);
+  background-position:
+    0 var(--sandbox-grid-origin-y),
+    var(--sandbox-grid-origin-x) 0,
+    0 var(--sandbox-grid-origin-y),
+    var(--sandbox-grid-origin-x) 0;
 }
 
 .sandbox-boundary {
@@ -2782,17 +2787,24 @@ h1 em {
 
 .sandbox-link-port {
   position: absolute;
-  z-index: 18;
-  right: -10px;
-  top: -10px;
-  width: 20px;
-  height: 20px;
+  z-index: 31;
+  left: 50%;
+  top: 50%;
+  width: 30px;
+  height: 30px;
   padding: 0;
   border: 3px solid var(--surface);
   border-radius: 50%;
   background: var(--green);
+  color: white;
   box-shadow: 0 0 0 2px var(--ink);
   cursor: crosshair;
+  display: grid;
+  place-items: center;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.58rem;
+  font-weight: 900;
+  transform: translate(-50%, -50%) rotate(var(--counter-entity-angle));
 }
 
 .sandbox-rope-layer {
@@ -2964,21 +2976,39 @@ h1 em {
   z-index: 30;
   left: 50%;
   bottom: 24px;
-  min-width: min(420px, calc(100% - 28px));
+  width: min(690px, calc(100% - 28px));
   padding: 11px 11px 11px 14px;
   border: 1px solid var(--ink);
   background: var(--green);
   color: white;
   box-shadow: 4px 4px 0 var(--ink);
   display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 3px 16px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: stretch;
+  gap: 10px 16px;
   transform: translateX(-50%);
 }
 
-.sandbox-connect-note strong { font-size: 0.66rem; letter-spacing: 0.05em; text-transform: uppercase; }
-.sandbox-connect-note span { color: #c6ddd6; font-size: 0.56rem; }
-.sandbox-connect-note button { grid-column: 2; grid-row: 1 / span 2; align-self: stretch; background: var(--surface); }
+.sandbox-connect-copy { min-width: 0; display: grid; gap: 4px; }
+.sandbox-connect-copy > strong { font-size: 0.66rem; letter-spacing: 0.05em; text-transform: uppercase; }
+.sandbox-connect-copy > span { color: #c6ddd6; font-size: 0.56rem; }
+
+.sandbox-connect-route {
+  padding-top: 5px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  overflow-x: auto;
+}
+
+.sandbox-connect-route > span { display: flex; align-items: center; gap: 5px; }
+.sandbox-connect-route b { min-width: max-content; display: grid; gap: 1px; font-size: 0.52rem; text-transform: uppercase; }
+.sandbox-connect-route b small { color: #c6ddd6; font-size: 0.4rem; letter-spacing: 0.06em; }
+.sandbox-connect-route b.pending { opacity: 0.7; }
+.sandbox-connect-route i { color: var(--orange-soft); font-style: normal; }
+
+.sandbox-connect-actions { display: grid; gap: 6px; }
+.sandbox-connect-actions button { min-width: 94px; padding-inline: 9px; background: var(--surface); }
 
 .sandbox-stage-actions {
   min-height: 52px;
@@ -3200,6 +3230,43 @@ h1 em {
 .sandbox-route-actions button:first-child,
 .sandbox-route-actions button.active { background: var(--green-soft); }
 
+.sandbox-pulley-stops {
+  padding: 9px 0;
+  border-bottom: 1px solid var(--line);
+  display: grid;
+  gap: 6px;
+}
+
+.sandbox-pulley-stops > div {
+  min-height: 39px;
+  padding: 5px 6px 5px 9px;
+  border: 1px solid var(--line-dark);
+  background: var(--surface);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.sandbox-pulley-stops span { min-width: 0; display: grid; gap: 1px; }
+.sandbox-pulley-stops small { color: var(--blue); font-size: 0.43rem; font-weight: 850; text-transform: uppercase; }
+.sandbox-pulley-stops strong { overflow: hidden; font-size: 0.54rem; text-overflow: ellipsis; text-transform: uppercase; white-space: nowrap; }
+.sandbox-pulley-stops > div > div { display: grid; grid-template-columns: repeat(4, 30px); }
+
+.sandbox-pulley-stops button {
+  width: 30px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--line-dark);
+  background: var(--surface-strong);
+  color: var(--ink);
+  cursor: pointer;
+  font-weight: 900;
+}
+
+.sandbox-pulley-stops button + button { border-left: 0; }
+.sandbox-pulley-stops button:disabled { cursor: not-allowed; opacity: 0.35; }
+
 .sandbox-delete {
   width: 100%;
   min-height: 40px;
@@ -3372,6 +3439,7 @@ footer p {
   .sandbox-snap-status,
   .sandbox-route-summary,
   .sandbox-route-actions,
+  .sandbox-pulley-stops,
   .sandbox-delete,
   .sandbox-inspector-empty {
     grid-column: 1 / -1;

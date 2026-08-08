@@ -422,6 +422,29 @@ test("multi-pulley rope routes preserve the visible start-to-end order", () => {
   assert.ok(route.points.at(-1).x > secondPulley.x);
 });
 
+test("a double-pulley rope remains taut under opposing endpoint motion", () => {
+  const start = createSandboxItem("block", "start", 20, 70);
+  const firstPulley = createSandboxItem("pulley", "first", 40, 30);
+  const secondPulley = createSandboxItem("pulley", "second", 70, 30);
+  const end = createSandboxItem("block", "end", 90, 70);
+  start.vx = -3;
+  end.vx = 3;
+  let items = [start, firstPulley, secondPulley, end];
+  const link = {
+    type: "rope",
+    a: "start",
+    b: "end",
+    verticalSnap: false,
+    pulleys: [{ id: "first", direction: 0 }, { id: "second", direction: 0 }],
+    naturalLength: 1,
+  };
+  link.naturalLength = getRopeRoute(items, link).lengthMeters;
+
+  for (let frame = 0; frame < 100; frame += 1) items = stepSandbox(items, [link], 0.04);
+
+  assert.ok(getRopeRoute(items, link).lengthMeters <= link.naturalLength + 0.001);
+});
+
 test("a rotated platform uses its rectangular hitbox as a wall", () => {
   const wall = createSandboxItem("platform", "wall", 52, 50);
   wall.angle = 90;

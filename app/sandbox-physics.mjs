@@ -865,7 +865,7 @@ function ropeGradients(items, link, participants) {
 function solveRopes(items, links) {
   const ropeLinks = links.filter((link) => link.type === "rope");
   applyPulleyRopeGuides(items, ropeLinks);
-  for (let iteration = 0; iteration < 4; iteration += 1) {
+  for (let iteration = 0; iteration < 8; iteration += 1) {
     for (const link of ropeLinks) {
       const route = getRopeRoute(items, link);
       const limit = link.naturalLength * WORLD_SCALE;
