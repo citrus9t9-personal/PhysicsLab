@@ -489,7 +489,7 @@ export function findSnapPlacement(item, items, threshold = 4.2) {
             score,
             targetId: target.id,
             targetLabel: target.label,
-            persistent: isFixedItem(item),
+            persistent: false,
           };
         }
       }
@@ -501,6 +501,29 @@ export function findSnapPlacement(item, items, threshold = 4.2) {
 export function findSmoothSurfaceJoin(item, items, threshold = GRID_STEP * 2) {
   if (!["incline", "platform"].includes(item.type)) return null;
   let best = null;
+
+  if (item.type === "incline") {
+    const geometry = getInclineGeometry(item);
+    const bottom = item.y + geometry.height / 2;
+    const groundDistance = Math.abs(GROUND_Y - bottom);
+    if (groundDistance <= threshold) {
+      const placedItem = { ...item, y: item.y + GROUND_Y - bottom };
+      if (placementFitsWorkspace(placedItem)) {
+        best = {
+          x: placedItem.x,
+          y: placedItem.y,
+          normal: { x: 0, y: -1 },
+          distance: groundDistance,
+          part: "low smooth join",
+          score: groundDistance,
+          targetId: "world-ground",
+          targetLabel: "Ground",
+          persistent: false,
+          smooth: true,
+        };
+      }
+    }
+  }
 
   for (const target of items) {
     if (target.id === item.id) continue;
@@ -549,7 +572,7 @@ export function findSmoothSurfaceJoin(item, items, threshold = GRID_STEP * 2) {
           score: joinDistance,
           targetId: target.id,
           targetLabel: target.label,
-          persistent: true,
+          persistent: false,
           smooth: true,
         };
       }
@@ -570,13 +593,111 @@ function gravityFor(item, items) {
   return { x: strength * Math.cos(direction), y: strength * Math.sin(direction) };
 }
 
+function inclineLowEndpoint(incline) {
+  const geometry = getInclineGeometry(incline);
+  const descentDirection = incline.angle >= 0 ? -1 : 1;
+  return {
+    x: incline.x + descentDirection * geometry.width / 2,
+    y: incline.y + geometry.height / 2,
+    descentDirection,
+  };
+}
+
+function joinedFlatSurface(incline, items, tolerance = 0.001) {
+  const low = inclineLowEndpoint(incline);
+  if (Math.abs(low.y - GROUND_Y) <= tolerance) {
+    return { id: "world-ground", y: GROUND_Y, low };
+  }
+
+  for (const surface of items) {
+    if (surface.id === incline.id || surface.type !== "platform" || Math.abs(surface.angle % 180) > 0.001) continue;
+    const halfWidth = ((surface.width ?? surface.size) * WORLD_SCALE) / 2;
+    const top = surface.y - ((surface.height ?? 1) * WORLD_SCALE) / 2;
+    const touchesTop = Math.abs(low.y - top) <= tolerance;
+    const touchesEnd =
+      Math.abs(low.x - (surface.x - halfWidth)) <= tolerance ||
+      Math.abs(low.x - (surface.x + halfWidth)) <= tolerance;
+    if (touchesTop && touchesEnd) return { id: surface.id, y: top, low };
+  }
+  return null;
+}
+
+function downhillEdgeReached(item, join, tolerance = 0.05) {
+  const bounds = getItemBounds(item);
+  const passedEndpoint = join.low.descentDirection < 0
+    ? bounds.left <= join.low.x + tolerance
+    : bounds.right >= join.low.x - tolerance;
+  return passedEndpoint && bounds.bottom >= join.y - GRID_STEP * 0.4;
+}
+
+function transitionBlockToJoinedFlat(item, items) {
+  if (item.type !== "block" || Math.abs(item.supportSurfaceAngle ?? 0) < 0.001) return null;
+  const incline = items.find((candidate) =>
+    candidate.id === item.supportSurfaceId && candidate.type === "incline");
+  if (!incline) return null;
+  const join = joinedFlatSurface(incline, items);
+  if (!join || item.vx * join.low.descentDirection <= 0 || !downhillEdgeReached(item, join)) return null;
+
+  const speed = Math.hypot(item.vx, item.vy);
+  item.vx = join.low.descentDirection * speed;
+  item.vy = 0;
+  item.angle = 0;
+  item.y = join.y - (item.size * WORLD_SCALE) / 2;
+  item.supportSurfaceId = join.id;
+  item.supportSurfaceAngle = 0;
+  item.supportAirTime = 0;
+  return {
+    id: join.id,
+    angle: 0,
+    strength: 1,
+    incomingSpeed: speed,
+  };
+}
+
+function blockHasClearedJoinedIncline(item, incline, items) {
+  if (item.type !== "block" || Math.abs(item.supportSurfaceAngle ?? 0) > 0.001) return false;
+  const join = joinedFlatSurface(incline, items);
+  if (!join || item.supportSurfaceId !== join.id) return false;
+  return item.vx * join.low.descentDirection >= 0 && downhillEdgeReached(item, join);
+}
+
+function inclineSurfaceManifold(item, incline) {
+  const geometry = getInclineGeometry(incline);
+  const tangent = {
+    x: Math.cos(radians(incline.angle)),
+    y: -Math.sin(radians(incline.angle)),
+  };
+  const upward = { x: tangent.y, y: -tangent.x };
+  const collisionNormal = { x: -upward.x, y: -upward.y };
+  const inclineShape = getItemHitbox(incline);
+  let best = null;
+
+  for (const shape of getItemHitboxes(item)) {
+    const centerOffset = { x: shape.x - incline.x, y: shape.y - incline.y };
+    const alongSurface = dot(centerOffset, tangent);
+    const tangentReach = shapeSupport(shape, tangent);
+    if (Math.abs(alongSurface) > geometry.diagonal / 2 + tangentReach) continue;
+
+    const heightAboveSurface = dot(centerOffset, upward);
+    const penetration = shapeSupport(shape, upward) + inclineShape.halfHeight - heightAboveSurface;
+    if (penetration <= CONTACT_EPSILON) continue;
+    const candidate = { normal: collisionNormal, penetration };
+    if (!best || candidate.penetration > best.penetration) best = candidate;
+  }
+  return best;
+}
+
 function resolveStaticCollision(item, surface) {
-  let manifold = null;
-  for (const itemShape of getItemHitboxes(item)) {
-    for (const surfaceShape of getItemHitboxes(surface)) {
-      const candidate = collisionManifold(itemShape, surfaceShape);
-      if (candidate && (!manifold || candidate.penetration > manifold.penetration)) {
-        manifold = candidate;
+  let manifold = item.type === "block" && surface.type === "incline"
+    ? inclineSurfaceManifold(item, surface)
+    : null;
+  if (!(item.type === "block" && surface.type === "incline")) {
+    for (const itemShape of getItemHitboxes(item)) {
+      for (const surfaceShape of getItemHitboxes(surface)) {
+        const candidate = collisionManifold(itemShape, surfaceShape);
+        if (candidate && (!manifold || candidate.penetration > manifold.penetration)) {
+          manifold = candidate;
+        }
       }
     }
   }
@@ -980,9 +1101,9 @@ function resolveEnvironment(item, items) {
     : null;
   for (const surface of items) {
     if (surface.id === item.id) continue;
-    if (surface.snapTargetId === item.id || item.snapTargetId === surface.id) continue;
     if (!STATIC_COLLIDER_TYPES.has(surface.type) && !(surface.type === "rod" && surface.anchorEnabled)) continue;
     if (surface.type === "pulley" && !surface.fixed) continue;
+    if (surface.type === "incline" && blockHasClearedJoinedIncline(item, surface, items)) continue;
     const manifold = resolveStaticCollision(item, surface);
     const surfaceAngle = supportAngleFor(surface);
     if (!manifold || manifold.normal.y <= 0.35 || surfaceAngle === null) continue;
@@ -1112,25 +1233,11 @@ function syncAtwoodAfterContacts(systems) {
   }
 }
 
-function syncSnapAttachments(items) {
-  const byId = new Map(items.map((item) => [item.id, item]));
-  for (let pass = 0; pass < items.length; pass += 1) {
-    for (const item of items) {
-      if (!item.snapTargetId || !isFixedItem(item)) continue;
-      const target = byId.get(item.snapTargetId);
-      if (!target) {
-        item.snapTargetId = null;
-        continue;
-      }
-      const previousX = item.x;
-      const previousY = item.y;
-      item.x = target.x + (item.snapOffsetX ?? 0);
-      item.y = target.y + (item.snapOffsetY ?? 0);
-      if (item.anchorEnabled) {
-        item.anchorX += item.x - previousX;
-        item.anchorY += item.y - previousY;
-      }
-    }
+function releaseLegacySnapAttachments(items) {
+  for (const item of items) {
+    item.snapTargetId = null;
+    item.snapOffsetX = 0;
+    item.snapOffsetY = 0;
   }
 }
 
@@ -1178,7 +1285,7 @@ export function stepSandbox(items, links, deltaSeconds) {
   const delta = Math.min(Math.max(deltaSeconds, 0), 0.04);
   const next = items.map((item) => ({ ...item }));
   const supportById = new Map();
-  syncSnapAttachments(next);
+  releaseLegacySnapAttachments(next);
   applyPulleyRopeGuides(next, links);
   const atwoodSystems = getSimpleAtwoodSystems(next, links);
   const atwoodParticipants = prepareAtwoodMotion(next, atwoodSystems, delta);
@@ -1215,7 +1322,7 @@ export function stepSandbox(items, links, deltaSeconds) {
     item.x += item.vx * WORLD_SCALE * delta;
     item.y += item.vy * WORLD_SCALE * delta;
     if (item.type === "wheel") item.angle += (item.vx / Math.max(item.radius, 0.2)) * delta * (180 / Math.PI);
-    const support = resolveEnvironment(item, next);
+    const support = transitionBlockToJoinedFlat(item, next) ?? resolveEnvironment(item, next);
     if (support) supportById.set(item.id, support);
   }
 
@@ -1229,7 +1336,6 @@ export function stepSandbox(items, links, deltaSeconds) {
     updateBlockSupport(item, support, delta);
   }
   applyPulleyRopeGuides(next, links);
-  syncSnapAttachments(next);
   return next;
 }
 
@@ -1253,6 +1359,6 @@ export function resetSandbox(items) {
       item.anchorY = anchor.y;
     }
   }
-  syncSnapAttachments(next);
+  releaseLegacySnapAttachments(next);
   return next;
 }

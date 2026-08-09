@@ -2473,11 +2473,6 @@ h1 em {
   outline-offset: -4px;
 }
 
-.sandbox-entity.attached:not(.selected) .sandbox-shape {
-  outline: 2px solid var(--green);
-  outline-offset: -2px;
-}
-
 .sandbox-shape {
   position: absolute;
   inset: 0;
@@ -2874,8 +2869,7 @@ h1 em {
 .marker-pulley { width: 25px; height: 25px; background: #dbe9f8; color: var(--blue); }
 .sandbox-rope-markers:not(.selected) .rope-marker { opacity: 0.72; transform: translate(-50%, -50%) scale(0.86); }
 
-.sandbox-snap-badge,
-.sandbox-attachment-badge {
+.sandbox-snap-badge {
   position: absolute;
   z-index: 24;
   left: 50%;
@@ -2895,7 +2889,6 @@ h1 em {
 }
 
 .sandbox-snap-badge { top: -38px; }
-.sandbox-attachment-badge { top: calc(100% + 31px); background: var(--surface); color: var(--green); }
 
 .sandbox-link {
   position: absolute;

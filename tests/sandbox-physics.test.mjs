@@ -191,8 +191,12 @@ test("inclines can join either platform height and sit flush on the ground", () 
   assert.equal(high.x, platformLeft);
   assert.equal(high.y, platformTop);
 
-  const grounded = clampItemToWorkspace({ ...incline, y: GROUND_Y });
-  assert.equal(getItemBounds(grounded).bottom, GROUND_Y);
+  const nearGround = { ...incline, y: GROUND_Y - geometry.height / 2 - 2 };
+  const groundJoin = findSmoothSurfaceJoin(nearGround, [], 10);
+  const grounded = { ...nearGround, x: groundJoin.x, y: groundJoin.y };
+  assert.equal(groundJoin.targetId, "world-ground");
+  assert.equal(groundJoin.smooth, true);
+  assert.ok(Math.abs(getItemBounds(grounded).bottom - GROUND_Y) < 1e-9);
 });
 
 test("dynamic bodies advance under gravity while carts stay on their track", () => {
@@ -531,6 +535,45 @@ test("a block leaving a slope projects its velocity horizontally on flat ground"
   assert.equal(next.angle, 0);
 });
 
+test("a block crosses a slope-to-ground seam without bouncing or losing speed", () => {
+  const incline = createSandboxItem("incline", "incline", 150, 0);
+  incline.angle = 30;
+  incline.initialAngle = 30;
+  const geometry = getInclineGeometry(incline);
+  incline.y = GROUND_Y - geometry.height / 2;
+  const low = { x: incline.x - geometry.width / 2, y: GROUND_Y };
+  const tangent = { x: Math.cos(Math.PI / 6), y: -Math.sin(Math.PI / 6) };
+  const upward = { x: tangent.y, y: -tangent.x };
+  const surfacePoint = {
+    x: low.x + 6,
+    y: low.y - Math.tan(Math.PI / 6) * 6,
+  };
+  const block = createSandboxItem("block", "block", surfacePoint.x, surfacePoint.y);
+  const surfaceClearance = getItemHitbox(block).halfHeight + getItemHitbox(incline).halfHeight;
+  block.x += upward.x * surfaceClearance;
+  block.y += upward.y * surfaceClearance;
+  block.angle = -30;
+  block.initialAngle = -30;
+  block.vx = -4 * tangent.x;
+  block.vy = 4 * -tangent.y;
+  block.supportSurfaceId = incline.id;
+  block.supportSurfaceAngle = -30;
+  block.supportAirTime = 0;
+  const startingSpeed = Math.hypot(block.vx, block.vy);
+
+  let items = [incline, block];
+  for (let frame = 0; frame < 12; frame += 1) items = stepSandbox(items, [], 0.04);
+  const next = items.find((item) => item.id === block.id);
+
+  assert.equal(next.supportSurfaceId, "world-ground");
+  assert.equal(next.supportSurfaceAngle, 0);
+  assert.equal(next.angle, 0);
+  assert.equal(next.vy, 0);
+  assert.ok(next.vx < 0);
+  assert.ok(Math.hypot(next.vx, next.vy) >= startingSpeed);
+  assert.ok(Math.abs(getItemBounds(next).bottom - GROUND_Y) < 1e-9);
+});
+
 test("a block keeps its downward velocity when a slope ends in a drop", () => {
   const block = createSandboxItem("block", "block", 200, 200);
   block.angle = -30;
@@ -599,16 +642,16 @@ test("circle and rotated-surface snaps also stop at exact hitbox contact", () =>
   }, platform));
 });
 
-test("fixed structures receive persistent snaps while dynamic bodies remain temporary", () => {
+test("all snap placements stay independent after the drag ends", () => {
   const platform = createSandboxItem("platform", "platform", 50, 60);
   const ledge = createSandboxItem("platform", "ledge", 50, 56);
   const ball = createSandboxItem("ball", "ball", 50, 52);
 
-  assert.equal(findSnapPlacement(ledge, [platform]).persistent, true);
+  assert.equal(findSnapPlacement(ledge, [platform]).persistent, false);
   assert.equal(findSnapPlacement(ball, [platform]).persistent, false);
 });
 
-test("persistent attachments follow their target during simulation", () => {
+test("legacy snap metadata cannot group a structure with a moving object", () => {
   const block = createSandboxItem("block", "block", 30, 30);
   block.vx = 2;
   block.vy = 0;
@@ -620,8 +663,10 @@ test("persistent attachments follow their target during simulation", () => {
   const nextBlock = next.find((item) => item.id === "block");
   const nextPlatform = next.find((item) => item.id === "platform");
 
-  assert.equal(nextPlatform.x, nextBlock.x);
-  assert.equal(nextPlatform.y, nextBlock.y - 8);
+  assert.ok(nextBlock.x > block.x);
+  assert.equal(nextPlatform.x, platform.x);
+  assert.equal(nextPlatform.y, platform.y);
+  assert.equal(nextPlatform.snapTargetId, null);
 });
 
 test("compound and field objects expose their own hitbox geometry", () => {
