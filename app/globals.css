@@ -2450,6 +2450,10 @@ h1 em {
   will-change: left, top;
 }
 
+.sandbox-entity.entity-block {
+  transition: transform 90ms linear;
+}
+
 .sandbox-entity:active { cursor: grabbing; }
 
 .sandbox-entity:focus-visible .sandbox-shape,
@@ -2479,6 +2483,7 @@ h1 em {
   border: 2px solid var(--ink);
   background: var(--orange);
   box-shadow: 4px 4px 0 var(--ink);
+  box-sizing: border-box;
   pointer-events: none;
 }
 

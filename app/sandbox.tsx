@@ -1278,16 +1278,12 @@ export default function SandboxLab() {
       setRunning(false);
       return;
     }
-    if (!runSnapshotRef.current) {
-      runSnapshotRef.current = cloneSandboxExperiment(itemsRef.current, linksRef.current) as ExperimentSnapshot;
-    }
+    runSnapshotRef.current = cloneSandboxExperiment(itemsRef.current, linksRef.current) as ExperimentSnapshot;
     setRunning(true);
   };
 
   const stepOnce = () => {
-    if (!runSnapshotRef.current) {
-      runSnapshotRef.current = cloneSandboxExperiment(itemsRef.current, linksRef.current) as ExperimentSnapshot;
-    }
+    runSnapshotRef.current = cloneSandboxExperiment(itemsRef.current, linksRef.current) as ExperimentSnapshot;
     setRunning(false);
     const next = stepSandbox(itemsRef.current, linksRef.current, 1 / 30) as SandboxItem[];
     itemsRef.current = next;

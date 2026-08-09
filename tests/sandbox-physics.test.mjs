@@ -168,7 +168,8 @@ test("inclines snap their low endpoint to a platform top without a gap", () => {
   const platformRight = platform.x + (platform.width * WORLD_SCALE) / 2;
 
   assert.equal(lowEndpoint.y, platformTop);
-  assert.ok(lowEndpoint.x === platformLeft || lowEndpoint.x === platformRight);
+  assert.notEqual(lowEndpoint.x, platformLeft);
+  assert.equal(lowEndpoint.x, platformRight);
   assert.equal(join.smooth, true);
 });
 
@@ -573,6 +574,74 @@ test("a block crosses a slope-to-ground seam without bouncing or losing speed", 
   assert.ok(next.vx < 0);
   assert.ok(Math.hypot(next.vx, next.vy) >= startingSpeed);
   assert.ok(Math.abs(getItemBounds(next).bottom - GROUND_Y) < 1e-9);
+});
+
+test("a block moves smoothly from flat ground onto a slope at full speed", () => {
+  const incline = createSandboxItem("incline", "incline", 150, 0);
+  incline.angle = 30;
+  incline.initialAngle = 30;
+  const geometry = getInclineGeometry(incline);
+  incline.y = GROUND_Y - geometry.height / 2;
+  const lowX = incline.x - geometry.width / 2;
+  const block = createSandboxItem("block", "block", lowX - 2.7, GROUND_Y - 2.5);
+  block.vx = 4;
+  block.vy = 0;
+  block.supportSurfaceId = "world-ground";
+  block.supportSurfaceAngle = 0;
+  block.supportAirTime = 0;
+  const region = createSandboxItem("gravity-region", "region", 150, 450);
+  region.width = 100;
+  region.height = 100;
+  region.gravityStrength = 0;
+
+  let items = [region, incline, block];
+  for (let frame = 0; frame < 8; frame += 1) items = stepSandbox(items, [], 0.04);
+  const next = items.find((item) => item.id === block.id);
+
+  assert.equal(next.supportSurfaceId, incline.id);
+  assert.equal(next.angle, -30);
+  assert.ok(next.vx > 0);
+  assert.ok(next.vy < 0);
+  assert.ok(Math.abs(Math.hypot(next.vx, next.vy) - 4) < 1e-6);
+});
+
+test("a block transfers both ways between a slope and its upper platform", () => {
+  const incline = createSandboxItem("incline", "incline", 137.5, 0);
+  incline.angle = 30;
+  incline.initialAngle = 30;
+  const geometry = getInclineGeometry(incline);
+  incline.y = 200 + geometry.height / 2;
+  const platform = createSandboxItem("platform", "platform", 162.5, 202.5);
+  const block = createSandboxItem("block", "block", 152.7, 197.5);
+  block.vx = -4;
+  block.vy = 0;
+  block.supportSurfaceId = platform.id;
+  block.supportSurfaceAngle = 0;
+  block.supportAirTime = 0;
+  const region = createSandboxItem("gravity-region", "region", 150, 200);
+  region.width = 100;
+  region.height = 100;
+  region.gravityStrength = 0;
+
+  let items = [region, incline, platform, block];
+  items = stepSandbox(items, [], 0.04);
+  let next = items.find((item) => item.id === block.id);
+  assert.equal(next.supportSurfaceId, incline.id);
+  assert.equal(next.angle, -30);
+  assert.ok(next.vx < 0);
+  assert.ok(next.vy > 0);
+  assert.ok(Math.abs(Math.hypot(next.vx, next.vy) - 4) < 1e-6);
+
+  items = items.map((item) => item.id === block.id
+    ? { ...item, vx: 4 * Math.cos(Math.PI / 6), vy: -4 * Math.sin(Math.PI / 6) }
+    : item);
+  items = stepSandbox(items, [], 0.04);
+  next = items.find((item) => item.id === block.id);
+  assert.equal(next.supportSurfaceId, platform.id);
+  assert.equal(next.angle, 0);
+  assert.ok(next.vx > 0);
+  assert.equal(next.vy, 0);
+  assert.ok(Math.abs(next.vx - 4) < 1e-6);
 });
 
 test("a block keeps its downward velocity when a slope ends in a drop", () => {

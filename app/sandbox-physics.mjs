@@ -501,6 +501,7 @@ export function findSnapPlacement(item, items, threshold = 4.2) {
 export function findSmoothSurfaceJoin(item, items, threshold = GRID_STEP * 2) {
   if (!["incline", "platform"].includes(item.type)) return null;
   let best = null;
+  let groundCandidate = null;
 
   if (item.type === "incline") {
     const geometry = getInclineGeometry(item);
@@ -509,7 +510,7 @@ export function findSmoothSurfaceJoin(item, items, threshold = GRID_STEP * 2) {
     if (groundDistance <= threshold) {
       const placedItem = { ...item, y: item.y + GROUND_Y - bottom };
       if (placementFitsWorkspace(placedItem)) {
-        best = {
+        groundCandidate = {
           x: placedItem.x,
           y: placedItem.y,
           normal: { x: 0, y: -1 },
@@ -533,29 +534,17 @@ export function findSmoothSurfaceJoin(item, items, threshold = GRID_STEP * 2) {
     const platform = item.type === "platform" ? item : target;
     if (Math.abs(platform.angle % 180) > 0.001) continue;
 
-    const inclineGeometry = getInclineGeometry(incline);
-    const risesRight = incline.angle >= 0;
-    const inclineEndpoints = [
-      {
-        name: "low",
-        x: incline.x + (risesRight ? -1 : 1) * inclineGeometry.width / 2,
-        y: incline.y + inclineGeometry.height / 2,
-      },
-      {
-        name: "high",
-        x: incline.x + (risesRight ? 1 : -1) * inclineGeometry.width / 2,
-        y: incline.y - inclineGeometry.height / 2,
-      },
-    ];
+    const endpoints = inclineEndpoints(incline);
     const platformHalfWidth = ((platform.width ?? platform.size) * WORLD_SCALE) / 2;
     const platformTop = platform.y - ((platform.height ?? 1) * WORLD_SCALE) / 2;
     const platformCorners = [
-      { x: platform.x - platformHalfWidth, y: platformTop },
-      { x: platform.x + platformHalfWidth, y: platformTop },
+      { x: platform.x - platformHalfWidth, y: platformTop, outwardDirection: 1 },
+      { x: platform.x + platformHalfWidth, y: platformTop, outwardDirection: -1 },
     ];
 
-    for (const endpoint of inclineEndpoints) {
+    for (const endpoint of endpoints) {
       for (const corner of platformCorners) {
+        if (endpoint.outwardDirection !== corner.outwardDirection) continue;
         const shift = item.type === "incline"
           ? { x: corner.x - endpoint.x, y: corner.y - endpoint.y }
           : { x: endpoint.x - corner.x, y: endpoint.y - corner.y };
@@ -578,7 +567,7 @@ export function findSmoothSurfaceJoin(item, items, threshold = GRID_STEP * 2) {
       }
     }
   }
-  return best;
+  return best ?? groundCandidate;
 }
 
 function gravityFor(item, items) {
@@ -593,53 +582,78 @@ function gravityFor(item, items) {
   return { x: strength * Math.cos(direction), y: strength * Math.sin(direction) };
 }
 
-function inclineLowEndpoint(incline) {
+function inclineEndpoints(incline) {
   const geometry = getInclineGeometry(incline);
   const descentDirection = incline.angle >= 0 ? -1 : 1;
-  return {
-    x: incline.x + descentDirection * geometry.width / 2,
-    y: incline.y + geometry.height / 2,
-    descentDirection,
-  };
+  const sine = Math.sin(Math.abs(radians(incline.angle)));
+  const cosine = Math.cos(radians(incline.angle));
+  return [
+    {
+      name: "low",
+      x: incline.x + descentDirection * geometry.width / 2,
+      y: incline.y + geometry.height / 2,
+      outwardDirection: descentDirection,
+      inwardSlope: { x: -descentDirection * cosine, y: -sine },
+    },
+    {
+      name: "high",
+      x: incline.x - descentDirection * geometry.width / 2,
+      y: incline.y - geometry.height / 2,
+      outwardDirection: -descentDirection,
+      inwardSlope: { x: descentDirection * cosine, y: sine },
+    },
+  ];
 }
 
-function joinedFlatSurface(incline, items, tolerance = 0.001) {
-  const low = inclineLowEndpoint(incline);
+function joinedFlatSurfaces(incline, items, tolerance = 0.001) {
+  const endpoints = inclineEndpoints(incline);
+  const low = endpoints[0];
+  const joins = [];
   if (Math.abs(low.y - GROUND_Y) <= tolerance) {
-    return { id: "world-ground", y: GROUND_Y, low };
+    joins.push({ id: "world-ground", y: GROUND_Y, endpoint: low });
   }
 
   for (const surface of items) {
     if (surface.id === incline.id || surface.type !== "platform" || Math.abs(surface.angle % 180) > 0.001) continue;
     const halfWidth = ((surface.width ?? surface.size) * WORLD_SCALE) / 2;
     const top = surface.y - ((surface.height ?? 1) * WORLD_SCALE) / 2;
-    const touchesTop = Math.abs(low.y - top) <= tolerance;
-    const touchesEnd =
-      Math.abs(low.x - (surface.x - halfWidth)) <= tolerance ||
-      Math.abs(low.x - (surface.x + halfWidth)) <= tolerance;
-    if (touchesTop && touchesEnd) return { id: surface.id, y: top, low };
+    const corners = [
+      { x: surface.x - halfWidth, outwardDirection: 1 },
+      { x: surface.x + halfWidth, outwardDirection: -1 },
+    ];
+    for (const endpoint of endpoints) {
+      const corner = corners.find((candidate) =>
+        candidate.outwardDirection === endpoint.outwardDirection &&
+        Math.abs(candidate.x - endpoint.x) <= tolerance);
+      if (corner && Math.abs(endpoint.y - top) <= tolerance) {
+        joins.push({ id: surface.id, y: top, endpoint });
+      }
+    }
   }
-  return null;
+  return joins;
 }
 
-function downhillEdgeReached(item, join, tolerance = 0.05) {
+function blockEdgeReachedJoin(item, join, direction, tolerance = 0.05) {
   const bounds = getItemBounds(item);
-  const passedEndpoint = join.low.descentDirection < 0
-    ? bounds.left <= join.low.x + tolerance
-    : bounds.right >= join.low.x - tolerance;
-  return passedEndpoint && bounds.bottom >= join.y - GRID_STEP * 0.4;
+  const passedEndpoint = direction < 0
+    ? bounds.left <= join.endpoint.x + tolerance
+    : bounds.right >= join.endpoint.x - tolerance;
+  return passedEndpoint && Math.abs(bounds.bottom - join.y) <= GRID_STEP * 1.25;
 }
 
-function transitionBlockToJoinedFlat(item, items) {
+function transitionBlockFromInclineToFlat(item, items) {
   if (item.type !== "block" || Math.abs(item.supportSurfaceAngle ?? 0) < 0.001) return null;
   const incline = items.find((candidate) =>
     candidate.id === item.supportSurfaceId && candidate.type === "incline");
   if (!incline) return null;
-  const join = joinedFlatSurface(incline, items);
-  if (!join || item.vx * join.low.descentDirection <= 0 || !downhillEdgeReached(item, join)) return null;
+  const join = joinedFlatSurfaces(incline, items)
+    .filter((candidate) => item.vx * candidate.endpoint.outwardDirection > 0)
+    .filter((candidate) => blockEdgeReachedJoin(item, candidate, candidate.endpoint.outwardDirection))
+    .sort((a, b) => Math.abs(item.x - a.endpoint.x) - Math.abs(item.x - b.endpoint.x))[0];
+  if (!join) return null;
 
   const speed = Math.hypot(item.vx, item.vy);
-  item.vx = join.low.descentDirection * speed;
+  item.vx = join.endpoint.outwardDirection * speed;
   item.vy = 0;
   item.angle = 0;
   item.y = join.y - (item.size * WORLD_SCALE) / 2;
@@ -654,11 +668,66 @@ function transitionBlockToJoinedFlat(item, items) {
   };
 }
 
+function alignBlockToIncline(item, incline) {
+  const tangent = {
+    x: Math.cos(radians(incline.angle)),
+    y: -Math.sin(radians(incline.angle)),
+  };
+  const upward = { x: tangent.y, y: -tangent.x };
+  const clearance = shapeSupport(getItemHitbox(item), upward) + getItemHitbox(incline).halfHeight;
+  item.y = incline.y + (clearance - (item.x - incline.x) * upward.x) / upward.y;
+}
+
+function transitionBlockFromFlatToIncline(item, items) {
+  if (item.type !== "block" || Math.abs(item.supportSurfaceAngle ?? 0) > 0.001) return null;
+  let match = null;
+  for (const incline of items) {
+    if (incline.type !== "incline") continue;
+    for (const join of joinedFlatSurfaces(incline, items)) {
+      if (join.id !== item.supportSurfaceId) continue;
+      const inwardDirection = -join.endpoint.outwardDirection;
+      if (item.vx * inwardDirection <= 0 || !blockEdgeReachedJoin(item, join, inwardDirection)) continue;
+      const distanceToJoin = Math.abs(item.x - join.endpoint.x);
+      if (!match || distanceToJoin < match.distance) match = { incline, join, distance: distanceToJoin };
+    }
+  }
+  if (!match) return null;
+
+  const speed = Math.hypot(item.vx, item.vy);
+  item.vx = match.join.endpoint.inwardSlope.x * speed;
+  item.vy = match.join.endpoint.inwardSlope.y * speed;
+  item.angle = -match.incline.angle;
+  alignBlockToIncline(item, match.incline);
+  item.supportSurfaceId = match.incline.id;
+  item.supportSurfaceAngle = -match.incline.angle;
+  item.supportAirTime = 0;
+  return {
+    id: match.incline.id,
+    angle: -match.incline.angle,
+    strength: Math.cos(Math.abs(radians(match.incline.angle))),
+    incomingSpeed: speed,
+  };
+}
+
+function transitionBlockAcrossJoinedSurface(item, items) {
+  return transitionBlockFromInclineToFlat(item, items) ?? transitionBlockFromFlatToIncline(item, items);
+}
+
 function blockHasClearedJoinedIncline(item, incline, items) {
   if (item.type !== "block" || Math.abs(item.supportSurfaceAngle ?? 0) > 0.001) return false;
-  const join = joinedFlatSurface(incline, items);
-  if (!join || item.supportSurfaceId !== join.id) return false;
-  return item.vx * join.low.descentDirection >= 0 && downhillEdgeReached(item, join);
+  return joinedFlatSurfaces(incline, items).some((join) =>
+    item.supportSurfaceId === join.id &&
+    item.vx * join.endpoint.outwardDirection >= 0 &&
+    blockEdgeReachedJoin(item, join, join.endpoint.outwardDirection));
+}
+
+function blockEnteringJoinedIncline(item, items) {
+  if (item.type !== "block" || Math.abs(item.supportSurfaceAngle ?? 0) < 0.001) return null;
+  const incline = items.find((candidate) => candidate.id === item.supportSurfaceId && candidate.type === "incline");
+  if (!incline) return null;
+  return joinedFlatSurfaces(incline, items).find((join) =>
+    item.vx * join.endpoint.inwardSlope.x > 0 &&
+    Math.abs(item.x - join.endpoint.x) <= item.size * WORLD_SCALE * 1.5) ?? null;
 }
 
 function inclineSurfaceManifold(item, incline) {
@@ -680,8 +749,8 @@ function inclineSurfaceManifold(item, incline) {
 
     const heightAboveSurface = dot(centerOffset, upward);
     const penetration = shapeSupport(shape, upward) + inclineShape.halfHeight - heightAboveSurface;
-    if (penetration <= CONTACT_EPSILON) continue;
-    const candidate = { normal: collisionNormal, penetration };
+    if (penetration < -0.000001) continue;
+    const candidate = { normal: collisionNormal, penetration: Math.max(0, penetration) };
     if (!best || candidate.penetration > best.penetration) best = candidate;
   }
   return best;
@@ -1061,7 +1130,7 @@ function solveBodyCollisions(items) {
   }
 }
 
-function keepInsideStage(item) {
+function keepInsideStage(item, ignoreGround = false) {
   const bounds = getItemBounds(item);
   const contacts = { left: false, right: false, top: false, ground: false };
   if (bounds.left < LEFT_WALL_X) {
@@ -1079,7 +1148,7 @@ function keepInsideStage(item) {
     item.vy = Math.abs(item.vy);
     contacts.top = true;
   }
-  if (bounds.bottom > GROUND_Y) {
+  if (!ignoreGround && bounds.bottom > GROUND_Y) {
     item.y -= bounds.bottom - GROUND_Y;
     item.vy = item.type === "block" ? 0 : -Math.abs(item.vy);
     contacts.ground = true;
@@ -1095,7 +1164,8 @@ function supportAngleFor(surface) {
 
 function resolveEnvironment(item, items) {
   const environmentIncomingSpeed = Math.hypot(item.vx, item.vy);
-  const boundary = keepInsideStage(item);
+  const enteringJoin = blockEnteringJoinedIncline(item, items);
+  const boundary = keepInsideStage(item, enteringJoin?.id === "world-ground");
   let support = boundary.ground
     ? { id: "world-ground", angle: 0, strength: 1, incomingSpeed: environmentIncomingSpeed }
     : null;
@@ -1103,6 +1173,7 @@ function resolveEnvironment(item, items) {
     if (surface.id === item.id) continue;
     if (!STATIC_COLLIDER_TYPES.has(surface.type) && !(surface.type === "rod" && surface.anchorEnabled)) continue;
     if (surface.type === "pulley" && !surface.fixed) continue;
+    if (enteringJoin?.id === surface.id) continue;
     if (surface.type === "incline" && blockHasClearedJoinedIncline(item, surface, items)) continue;
     const manifold = resolveStaticCollision(item, surface);
     const surfaceAngle = supportAngleFor(surface);
@@ -1322,7 +1393,7 @@ export function stepSandbox(items, links, deltaSeconds) {
     item.x += item.vx * WORLD_SCALE * delta;
     item.y += item.vy * WORLD_SCALE * delta;
     if (item.type === "wheel") item.angle += (item.vx / Math.max(item.radius, 0.2)) * delta * (180 / Math.PI);
-    const support = transitionBlockToJoinedFlat(item, next) ?? resolveEnvironment(item, next);
+    const support = transitionBlockAcrossJoinedSurface(item, next) ?? resolveEnvironment(item, next);
     if (support) supportById.set(item.id, support);
   }
 
