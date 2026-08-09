@@ -23,6 +23,7 @@ import {
   WORLD_SCALE,
   applyPulleyRopeGuides,
   clampItemToWorkspace,
+  cloneSandboxExperiment,
   createSandboxItem,
   createStarterSandbox,
   findSnapPlacement,
@@ -109,6 +110,11 @@ interface SnapGuide {
   targetLabel: string;
   part: string;
   smooth?: boolean;
+}
+
+interface ExperimentSnapshot {
+  items: SandboxItem[];
+  links: SandboxLink[];
 }
 
 const ICONS: Record<string, string> = {
@@ -290,6 +296,7 @@ export default function SandboxLab() {
   const selectedItemIdRef = useRef(selectedItemId);
   const selectedLinkIdRef = useRef(selectedLinkId);
   const historyRef = useRef<Array<{ items: SandboxItem[]; links: SandboxLink[] }>>([]);
+  const runSnapshotRef = useRef<ExperimentSnapshot | null>(null);
   const zoomRef = useRef(DEFAULT_SANDBOX_ZOOM);
   const cameraRef = useRef({ x: 0, y: 0 });
   const didCenterCameraRef = useRef(false);
@@ -322,6 +329,7 @@ export default function SandboxLab() {
   }, [selectedItemId, selectedLinkId]);
 
   const recordHistory = useCallback(() => {
+    runSnapshotRef.current = null;
     historyRef.current.push({
       items: itemsRef.current.map((item) => ({ ...item })),
       links: linksRef.current.map((link) => ({
@@ -347,6 +355,7 @@ export default function SandboxLab() {
     setPulleyLinkId(null);
     setSnapGuide(null);
     setRunning(false);
+    runSnapshotRef.current = null;
     setUndoCount(historyRef.current.length);
   }, []);
 
@@ -444,7 +453,11 @@ export default function SandboxLab() {
       if (lastFrameRef.current === null) lastFrameRef.current = timestamp;
       const delta = Math.min((timestamp - lastFrameRef.current) / 1000, 0.04) * playbackSpeed;
       lastFrameRef.current = timestamp;
-      setItems((current) => stepSandbox(current, links, delta));
+      setItems((current) => {
+        const next = stepSandbox(current, links, delta);
+        itemsRef.current = next;
+        return next;
+      });
       frame = requestAnimationFrame(animate);
     };
     frame = requestAnimationFrame(animate);
@@ -1260,11 +1273,41 @@ export default function SandboxLab() {
     dragRef.current = null;
   };
 
+  const toggleRun = () => {
+    if (running) {
+      setRunning(false);
+      return;
+    }
+    if (!runSnapshotRef.current) {
+      runSnapshotRef.current = cloneSandboxExperiment(itemsRef.current, linksRef.current) as ExperimentSnapshot;
+    }
+    setRunning(true);
+  };
+
+  const stepOnce = () => {
+    if (!runSnapshotRef.current) {
+      runSnapshotRef.current = cloneSandboxExperiment(itemsRef.current, linksRef.current) as ExperimentSnapshot;
+    }
+    setRunning(false);
+    const next = stepSandbox(itemsRef.current, linksRef.current, 1 / 30) as SandboxItem[];
+    itemsRef.current = next;
+    setItems(next);
+  };
+
   const reset = () => {
-    if (itemsRef.current.length) recordHistory();
-    setItems((current) => resetSandbox(current));
+    const snapshot = runSnapshotRef.current
+      ? cloneSandboxExperiment(runSnapshotRef.current.items, runSnapshotRef.current.links) as ExperimentSnapshot
+      : null;
+    if (itemsRef.current.length || linksRef.current.length) recordHistory();
+    const nextItems = snapshot?.items ?? (resetSandbox(itemsRef.current) as SandboxItem[]);
+    const nextLinks = snapshot?.links ?? (cloneSandboxExperiment([], linksRef.current).links as SandboxLink[]);
+    itemsRef.current = nextItems;
+    linksRef.current = nextLinks;
+    setItems(nextItems);
+    setLinks(nextLinks);
     setSnapGuide(null);
     setRunning(false);
+    runSnapshotRef.current = null;
   };
 
   const loadStarter = () => {
@@ -1327,8 +1370,8 @@ export default function SandboxLab() {
         <div className="sandbox-center">
           <div className="sandbox-toolbar">
             <div className="sandbox-run-controls">
-              <button type="button" className="sandbox-run" onClick={() => setRunning((current) => !current)}>{running ? "Ⅱ Pause" : "▶ Run"}</button>
-              <button type="button" onClick={() => { setRunning(false); setItems((current) => stepSandbox(current, links, 1 / 30)); }}>Step</button>
+              <button type="button" className="sandbox-run" onClick={toggleRun}>{running ? "Ⅱ Pause" : "▶ Run"}</button>
+              <button type="button" onClick={stepOnce}>Step</button>
               <button type="button" onClick={reset}>Reset</button>
               <button type="button" onClick={undo} disabled={undoCount === 0} aria-label="Undo last sandbox edit" aria-keyshortcuts="Control+Z Meta+Z">Undo</button>
             </div>

@@ -1339,6 +1339,16 @@ export function stepSandbox(items, links, deltaSeconds) {
   return next;
 }
 
+export function cloneSandboxExperiment(items, links) {
+  return {
+    items: items.map((item) => ({ ...item })),
+    links: links.map((link) => ({
+      ...link,
+      pulleys: (link.pulleys ?? []).map((pulley) => ({ ...pulley })),
+    })),
+  };
+}
+
 export function resetSandbox(items) {
   const next = items.map((item) => ({
     ...item,

@@ -14,6 +14,7 @@ import {
   WORLD_SCALE,
   applyPulleyRopeGuides,
   clampItemToWorkspace,
+  cloneSandboxExperiment,
   collisionManifold,
   createSandboxItem,
   createStarterSandbox,
@@ -719,4 +720,34 @@ test("reset restores placed positions and initial velocities", () => {
   const moved = { ...ball, x: 75, y: 80, vx: -8, vy: 5 };
 
   assert.deepEqual(resetSandbox([moved])[0], { ...ball, angularVelocity: 0 });
+});
+
+test("experiment snapshots preserve every entity and connection value", () => {
+  const block = createSandboxItem("block", "block", 40, 20);
+  block.mass = 7.5;
+  block.friction = 0.42;
+  block.initialVx = 3.25;
+  const link = {
+    id: "rope",
+    type: "rope",
+    a: "block",
+    b: "other",
+    naturalLength: 14.5,
+    springConstant: 18,
+    verticalSnap: true,
+    pulleys: [{ id: "pulley", direction: -1 }],
+  };
+  const snapshot = cloneSandboxExperiment([block], [link]);
+
+  block.mass = 1;
+  block.friction = 0;
+  link.naturalLength = 2;
+  link.pulleys[0].direction = 1;
+
+  assert.equal(snapshot.items[0].mass, 7.5);
+  assert.equal(snapshot.items[0].friction, 0.42);
+  assert.equal(snapshot.items[0].initialVx, 3.25);
+  assert.equal(snapshot.links[0].naturalLength, 14.5);
+  assert.equal(snapshot.links[0].verticalSnap, true);
+  assert.equal(snapshot.links[0].pulleys[0].direction, -1);
 });
