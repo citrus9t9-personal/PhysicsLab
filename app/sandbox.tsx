@@ -32,9 +32,9 @@ import {
   getInclineGeometry,
   getRodAnchorPoint,
   getRopeRoute,
+  getSandboxAnalysis,
   isDynamicItem,
   isFixedItem,
-  resetSandbox,
   resizePendulumFromBob,
   resizeSquareFromCorner,
   snapSandboxItemPosition,
@@ -49,6 +49,12 @@ import {
   minimumSandboxZoom,
   screenPointToWorld,
 } from "./sandbox-camera.mjs";
+import SandboxGraph, { type SandboxMotionSample } from "./sandbox-graph";
+import {
+  decodeSandboxProject,
+  encodeSandboxProject,
+  measureSandboxItems,
+} from "./sandbox-project.mjs";
 
 type ConnectorType = "rope" | "spring";
 
@@ -117,6 +123,20 @@ interface ExperimentSnapshot {
   links: SandboxLink[];
 }
 
+type RulerBasis = "center" | "edge";
+
+interface SandboxAnalysis {
+  position: { x: number; height: number };
+  velocity: { x: number; y: number; magnitude: number };
+  acceleration: { x: number; y: number; magnitude: number };
+  momentum: { x: number; y: number; magnitude: number };
+  netForce: { x: number; y: number; magnitude: number };
+  kineticEnergy: number;
+  potentialEnergy: number;
+  totalEnergy: number;
+  forces: Array<{ label: string; x: number; y: number; magnitude: number; tone: string }>;
+}
+
 const ICONS: Record<string, string> = {
   block: "▣",
   ball: "●",
@@ -136,6 +156,48 @@ const CATEGORIES = ["Objects", "Structures", "Fields", "Connections"];
 const DEFAULT_SANDBOX_ZOOM = 0.75;
 
 const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
+
+function captureMotionSample(items: SandboxItem[], time: number): SandboxMotionSample {
+  const trackedItems = items.filter((item) => (
+    (isDynamicItem(item) && !isFixedItem(item)) || item.type === "pendulum" || (item.type === "rod" && item.anchorEnabled)
+  ));
+  return {
+    time,
+    objects: Object.fromEntries(trackedItems.map((item) => {
+      if (item.type === "pendulum") {
+        const theta = (item.angle * Math.PI) / 180;
+        const arm = item.length * WORLD_SCALE;
+        const x = item.x - Math.sin(theta) * arm;
+        const y = item.y + Math.cos(theta) * arm;
+        const vx = -Math.cos(theta) * item.length * item.angularVelocity;
+        const vy = -Math.sin(theta) * item.length * item.angularVelocity;
+        return [item.id, {
+          x: x / WORLD_SCALE,
+          height: (GROUND_Y - y) / WORLD_SCALE,
+          vx,
+          vy,
+          speed: Math.hypot(vx, vy),
+          mass: item.mass,
+        }];
+      }
+      return [item.id, {
+        x: item.x / WORLD_SCALE,
+        height: (GROUND_Y - item.y) / WORLD_SCALE,
+        vx: item.vx,
+        vy: item.vy,
+        speed: Math.hypot(item.vx, item.vy),
+        mass: item.mass,
+      }];
+    })),
+  };
+}
+
+function nextProjectCounter(items: SandboxItem[], links: SandboxLink[]) {
+  return [...items, ...links].reduce((highest, entry) => {
+    const suffix = Number(entry.id.match(/(\d+)$/)?.[1] ?? 0);
+    return Math.max(highest, suffix + 1);
+  }, 1);
+}
 
 function NumberControl({
   label,
@@ -160,6 +222,55 @@ function NumberControl({
       <span><span>{label}</span><output>{value.toFixed(decimals)} {unit}</output></span>
       <input type="range" min={min} max={max} step={step} value={value} onChange={(event) => onChange(Number(event.target.value))} />
     </label>
+  );
+}
+
+function SandboxForceDiagram({ analysis }: { analysis: SandboxAnalysis }) {
+  const largestForce = Math.max(...analysis.forces.map((force) => force.magnitude), 1);
+  return (
+    <div className="sandbox-fbd" role="img" aria-label={`Free-body diagram with ${analysis.forces.length} force vectors`}>
+      <div className="sandbox-fbd-grid" />
+      <div className="sandbox-fbd-body">m</div>
+      {analysis.forces.map((force, index) => {
+        const angle = Math.atan2(force.y, force.x) * 180 / Math.PI;
+        const length = 34 + (force.magnitude / largestForce) * 42;
+        return <div
+          key={`${force.label}-${index}`}
+          className={`sandbox-force-vector tone-${force.tone}`}
+          style={{ "--force-angle": `${angle}deg`, "--force-counter-angle": `${-angle}deg`, "--force-length": `${length}px` } as CSSProperties}
+        ><span>{force.label} {force.magnitude.toFixed(2)} N</span></div>;
+      })}
+      {analysis.forces.length === 0 && <p>No external force on this object.</p>}
+    </div>
+  );
+}
+
+function LiveObjectInspection({ item, analysis }: { item: SandboxItem; analysis: SandboxAnalysis }) {
+  const rows = [
+    ["Mass", item.mass, "kg"],
+    ["Position x", analysis.position.x, "m"],
+    ["Height", analysis.position.height, "m"],
+    ["Velocity x", analysis.velocity.x, "m/s"],
+    ["Velocity y", analysis.velocity.y, "m/s"],
+    ["Speed", analysis.velocity.magnitude, "m/s"],
+    ["Acceleration x", analysis.acceleration.x, "m/s²"],
+    ["Acceleration y", analysis.acceleration.y, "m/s²"],
+    ["Net force", analysis.netForce.magnitude, "N"],
+    ["Momentum", analysis.momentum.magnitude, "kg·m/s"],
+    ["Kinetic energy", analysis.kineticEnergy, "J"],
+    ["Potential energy", analysis.potentialEnergy, "J"],
+    ["Total energy", analysis.totalEnergy, "J"],
+  ] as const;
+  return (
+    <div className="sandbox-live-inspection">
+      <div className="sandbox-live-state"><i />Paused measurement</div>
+      <dl className="sandbox-live-values">
+        {rows.map(([label, value, unit]) => <div key={label}><dt>{label}</dt><dd>{value.toFixed(3)} <small>{unit}</small></dd></div>)}
+      </dl>
+      <h3>Free-body diagram</h3>
+      <SandboxForceDiagram analysis={analysis} />
+      <p className="sandbox-analysis-note">Vector lengths are scaled relative to the largest force on this object.</p>
+    </div>
   );
 }
 
@@ -264,8 +375,21 @@ export default function SandboxLab() {
   const [pulleyLinkId, setPulleyLinkId] = useState<string | null>(null);
   const [showHitboxes, setShowHitboxes] = useState(false);
   const [snapGuide, setSnapGuide] = useState<SnapGuide | null>(null);
+  const [initialized, setInitialized] = useState(false);
   const [running, setRunning] = useState(false);
   const [playbackSpeed, setPlaybackSpeed] = useState(1);
+  const [simulationTime, setSimulationTime] = useState(0);
+  const [motionHistory, setMotionHistory] = useState<SandboxMotionSample[]>([]);
+  const [showGraph, setShowGraph] = useState(false);
+  const [graphObjectId, setGraphObjectId] = useState<string | null>(null);
+  const [runGeneration, setRunGeneration] = useState(0);
+  const [projectPanelOpen, setProjectPanelOpen] = useState(false);
+  const [projectCode, setProjectCode] = useState("");
+  const [loadCode, setLoadCode] = useState("");
+  const [projectMessage, setProjectMessage] = useState("");
+  const [rulerActive, setRulerActive] = useState(false);
+  const [rulerBasis, setRulerBasis] = useState<RulerBasis>("center");
+  const [rulerIds, setRulerIds] = useState<string[]>([]);
   const [zoom, setZoom] = useState(DEFAULT_SANDBOX_ZOOM);
   const [camera, setCamera] = useState({ x: 0, y: 0 });
   const [isPanning, setIsPanning] = useState(false);
@@ -295,8 +419,13 @@ export default function SandboxLab() {
   const linksRef = useRef(links);
   const selectedItemIdRef = useRef(selectedItemId);
   const selectedLinkIdRef = useRef(selectedLinkId);
+  const initializedRef = useRef(initialized);
+  const runningRef = useRef(running);
   const historyRef = useRef<Array<{ items: SandboxItem[]; links: SandboxLink[] }>>([]);
   const runSnapshotRef = useRef<ExperimentSnapshot | null>(null);
+  const simulationTimeRef = useRef(0);
+  const lastMotionSampleRef = useRef(0);
+  const motionHistoryRef = useRef<SandboxMotionSample[]>([]);
   const zoomRef = useRef(DEFAULT_SANDBOX_ZOOM);
   const cameraRef = useRef({ x: 0, y: 0 });
   const didCenterCameraRef = useRef(false);
@@ -328,8 +457,15 @@ export default function SandboxLab() {
     selectedLinkIdRef.current = selectedLinkId;
   }, [selectedItemId, selectedLinkId]);
 
+  useEffect(() => {
+    initializedRef.current = initialized;
+  }, [initialized]);
+
+  useEffect(() => {
+    runningRef.current = running;
+  }, [running]);
+
   const recordHistory = useCallback(() => {
-    runSnapshotRef.current = null;
     historyRef.current.push({
       items: itemsRef.current.map((item) => ({ ...item })),
       links: linksRef.current.map((link) => ({
@@ -342,6 +478,7 @@ export default function SandboxLab() {
   }, []);
 
   const undo = useCallback(() => {
+    if (initializedRef.current) return;
     const previous = historyRef.current.pop();
     if (!previous) return;
     itemsRef.current = previous.items;
@@ -355,11 +492,18 @@ export default function SandboxLab() {
     setPulleyLinkId(null);
     setSnapGuide(null);
     setRunning(false);
+    setInitialized(false);
     runSnapshotRef.current = null;
+    simulationTimeRef.current = 0;
+    lastMotionSampleRef.current = 0;
+    motionHistoryRef.current = [];
+    setSimulationTime(0);
+    setMotionHistory([]);
     setUndoCount(historyRef.current.length);
   }, []);
 
   const deleteSelection = useCallback(() => {
+    if (initializedRef.current) return;
     const itemId = selectedItemIdRef.current;
     const linkId = selectedLinkIdRef.current;
     if (!itemId && !linkId) return;
@@ -442,6 +586,16 @@ export default function SandboxLab() {
       a: items.find((item) => item.id === link.a),
       b: items.find((item) => item.id === link.b),
     })), [items, links]);
+  const graphableItems = useMemo(() => items.filter((item) => (
+    (isDynamicItem(item) && !isFixedItem(item)) || item.type === "pendulum" || (item.type === "rod" && item.anchorEnabled)
+  )), [items]);
+  const trackedGraphObject = graphableItems.find((item) => item.id === graphObjectId) ?? graphableItems[0] ?? null;
+  const rulerMeasurement = useMemo(() => rulerIds.length === 2
+    ? measureSandboxItems(items, rulerIds[0], rulerIds[1], rulerBasis)
+    : null, [items, rulerBasis, rulerIds]);
+  const selectedAnalysis = useMemo(() => initialized && !running && selectedItem
+    ? getSandboxAnalysis(items, links, selectedItem.id) as SandboxAnalysis | null
+    : null, [initialized, items, links, running, selectedItem]);
 
   useEffect(() => {
     if (!running) {
@@ -450,26 +604,40 @@ export default function SandboxLab() {
     }
     let frame = 0;
     const animate = (timestamp: number) => {
+      if (!runningRef.current) return;
       if (lastFrameRef.current === null) lastFrameRef.current = timestamp;
       const delta = Math.min((timestamp - lastFrameRef.current) / 1000, 0.04) * playbackSpeed;
       lastFrameRef.current = timestamp;
-      setItems((current) => {
-        const next = stepSandbox(current, links, delta);
-        itemsRef.current = next;
-        return next;
-      });
+      const next = stepSandbox(itemsRef.current, linksRef.current, delta) as SandboxItem[];
+      const nextTime = simulationTimeRef.current + delta;
+      itemsRef.current = next;
+      simulationTimeRef.current = nextTime;
+      setItems(next);
+      setSimulationTime(nextTime);
+      if (nextTime - lastMotionSampleRef.current >= 0.05) {
+        lastMotionSampleRef.current = nextTime;
+        const sample = captureMotionSample(next, nextTime);
+        const nextHistory = [...motionHistoryRef.current, sample].slice(-6000);
+        motionHistoryRef.current = nextHistory;
+        setMotionHistory(nextHistory);
+      }
       frame = requestAnimationFrame(animate);
     };
     frame = requestAnimationFrame(animate);
     return () => cancelAnimationFrame(frame);
-  }, [running, links, playbackSpeed]);
+  }, [running, playbackSpeed]);
 
   const selectItem = (id: string) => {
+    if (initialized && running) return;
     selectedItemIdRef.current = id;
     selectedLinkIdRef.current = null;
     setSelectedItemId(id);
     setSelectedLinkId(null);
     setPulleyLinkId(null);
+    const item = itemsRef.current.find((candidate) => candidate.id === id);
+    if (item && ((isDynamicItem(item) && !isFixedItem(item)) || item.type === "pendulum" || (item.type === "rod" && item.anchorEnabled))) {
+      setGraphObjectId(id);
+    }
   };
 
   const clearSelection = () => {
@@ -481,6 +649,7 @@ export default function SandboxLab() {
   };
 
   const selectLink = (id: string) => {
+    if (initialized && running) return;
     const nextId = selectedLinkIdRef.current === id ? null : id;
     selectedItemIdRef.current = null;
     selectedLinkIdRef.current = nextId;
@@ -490,6 +659,7 @@ export default function SandboxLab() {
   };
 
   const addTool = (type: string, x?: number, y?: number) => {
+    if (initialized) return;
     if (type === "rope" || type === "spring") {
       const nextTool = connectorTool === type ? null : type;
       const selected = itemsRef.current.find((item) => item.id === selectedItemIdRef.current);
@@ -503,6 +673,8 @@ export default function SandboxLab() {
       setLinkStartId(canStartFromSelection ? selected?.id ?? null : null);
       setLinkPulleyIds([]);
       setPulleyLinkId(null);
+      setRulerActive(false);
+      setRulerIds([]);
       setRunning(false);
       return;
     }
@@ -738,6 +910,7 @@ export default function SandboxLab() {
   };
 
   const updateItem = (id: string, key: keyof SandboxItem, value: number | boolean) => {
+    if (initialized) return;
     recordHistory();
     setRunning(false);
     setItems((current) => current.map((item) => {
@@ -781,6 +954,7 @@ export default function SandboxLab() {
   };
 
   const setRodAnchor = (item: SandboxItem, position: number | null) => {
+    if (initialized) return;
     recordHistory();
     setRunning(false);
     setItems((current) => current.map((candidate) => {
@@ -804,6 +978,7 @@ export default function SandboxLab() {
   const removeSelected = deleteSelection;
 
   const createLink = (sourceId: string, targetId: string, type = connectorTool, pulleyIds = linkPulleyIds) => {
+    if (initialized) return;
     if (!type || sourceId === targetId) return;
     const a = itemsRef.current.find((item) => item.id === sourceId);
     const b = itemsRef.current.find((item) => item.id === targetId);
@@ -841,7 +1016,7 @@ export default function SandboxLab() {
   };
 
   const chooseEndpoint = (id: string) => {
-    if (!connectorTool) return;
+    if (initialized || !connectorTool) return;
     const item = itemsById.get(id);
     if (!item || item.type === "gravity-region") return;
     if (connectorTool === "rope" && item.type === "pulley") {
@@ -858,6 +1033,7 @@ export default function SandboxLab() {
   };
 
   const addPulleyToLink = (linkId: string, pulleyId: string) => {
+    if (initialized) return;
     const pulley = itemsById.get(pulleyId);
     if (pulley?.type !== "pulley") return;
     const currentLink = linksRef.current.find((link) => link.id === linkId);
@@ -893,6 +1069,7 @@ export default function SandboxLab() {
   };
 
   const updatePulleyRoute = (linkId: string, action: "earlier" | "later" | "flip" | "remove", routeIndex?: number) => {
+    if (initialized) return;
     const currentLink = linksRef.current.find((link) => link.id === linkId);
     if (!currentLink || currentLink.type !== "rope" || currentLink.pulleys.length === 0) return;
     const index = clamp(routeIndex ?? currentLink.pulleys.length - 1, 0, currentLink.pulleys.length - 1);
@@ -928,12 +1105,14 @@ export default function SandboxLab() {
   };
 
   const updateLink = (linkId: string, key: "naturalLength" | "springConstant", value: number) => {
+    if (initialized) return;
     recordHistory();
     setLinks((current) => current.map((link) => link.id === linkId ? { ...link, [key]: value } : link));
     setRunning(false);
   };
 
   const setRopeVerticalSnap = (linkId: string, enabled: boolean) => {
+    if (initialized) return;
     const currentLink = linksRef.current.find((link) => link.id === linkId);
     if (!currentLink || currentLink.type !== "rope") return;
     recordHistory();
@@ -960,6 +1139,7 @@ export default function SandboxLab() {
   };
 
   const beginResize = (event: PointerEvent<HTMLButtonElement>, item: SandboxItem, handle: string) => {
+    if (initialized) return;
     event.preventDefault();
     event.stopPropagation();
     setRunning(false);
@@ -1110,7 +1290,38 @@ export default function SandboxLab() {
     resizeRef.current = null;
   };
 
+  const toggleRuler = () => {
+    runningRef.current = false;
+    setRunning(false);
+    setConnectorTool(null);
+    setLinkStartId(null);
+    setLinkPulleyIds([]);
+    setPulleyLinkId(null);
+    setRulerActive((current) => {
+      if (current) setRulerIds([]);
+      return !current;
+    });
+  };
+
+  const chooseRulerPoint = (id: string) => {
+    setRulerIds((current) => {
+      if (current.length >= 2) return [id];
+      if (current[0] === id) return current;
+      return [...current, id];
+    });
+  };
+
   const beginItemDrag = (event: PointerEvent<HTMLDivElement>, item: SandboxItem) => {
+    if (rulerActive) {
+      event.preventDefault();
+      chooseRulerPoint(item.id);
+      return;
+    }
+    if (initialized) {
+      event.preventDefault();
+      if (!running) selectItem(item.id);
+      return;
+    }
     if (pulleyLinkId) {
       event.preventDefault();
       connectorClickRef.current = item.id;
@@ -1273,42 +1484,108 @@ export default function SandboxLab() {
     dragRef.current = null;
   };
 
-  const toggleRun = () => {
-    if (running) {
-      setRunning(false);
-      return;
-    }
+  const resetMotionRecording = (baseItems: SandboxItem[]) => {
+    const initialHistory = [captureMotionSample(baseItems, 0)];
+    simulationTimeRef.current = 0;
+    lastMotionSampleRef.current = 0;
+    motionHistoryRef.current = initialHistory;
+    setSimulationTime(0);
+    setMotionHistory(initialHistory);
+    setRunGeneration((current) => current + 1);
+  };
+
+  const initializeRun = () => {
+    if (running || initialized || itemsRef.current.length === 0) return;
     runSnapshotRef.current = cloneSandboxExperiment(itemsRef.current, linksRef.current) as ExperimentSnapshot;
-    setRunning(true);
+    initializedRef.current = true;
+    runningRef.current = false;
+    setInitialized(true);
+    setRunning(false);
+    setConnectorTool(null);
+    setLinkStartId(null);
+    setLinkPulleyIds([]);
+    setPulleyLinkId(null);
+    setRulerActive(false);
+    setRulerIds([]);
+    resetMotionRecording(itemsRef.current);
+    const firstGraphable = itemsRef.current.find((item) => (
+      (isDynamicItem(item) && !isFixedItem(item)) || item.type === "pendulum" || (item.type === "rod" && item.anchorEnabled)
+    ));
+    if (!graphObjectId && firstGraphable) setGraphObjectId(firstGraphable.id);
+  };
+
+  const togglePlayback = () => {
+    if (!initialized) return;
+    setRunning((current) => {
+      runningRef.current = !current;
+      return !current;
+    });
   };
 
   const stepOnce = () => {
-    runSnapshotRef.current = cloneSandboxExperiment(itemsRef.current, linksRef.current) as ExperimentSnapshot;
+    if (!initialized || running) return;
+    runningRef.current = false;
     setRunning(false);
-    const next = stepSandbox(itemsRef.current, linksRef.current, 1 / 30) as SandboxItem[];
+    const delta = 1 / 30;
+    const next = stepSandbox(itemsRef.current, linksRef.current, delta) as SandboxItem[];
+    const nextTime = simulationTimeRef.current + delta;
     itemsRef.current = next;
+    simulationTimeRef.current = nextTime;
+    lastMotionSampleRef.current = nextTime;
+    const nextHistory = [...motionHistoryRef.current, captureMotionSample(next, nextTime)].slice(-6000);
+    motionHistoryRef.current = nextHistory;
     setItems(next);
+    setSimulationTime(nextTime);
+    setMotionHistory(nextHistory);
   };
 
   const reset = () => {
-    const snapshot = runSnapshotRef.current
-      ? cloneSandboxExperiment(runSnapshotRef.current.items, runSnapshotRef.current.links) as ExperimentSnapshot
-      : null;
-    if (itemsRef.current.length || linksRef.current.length) recordHistory();
-    const nextItems = snapshot?.items ?? (resetSandbox(itemsRef.current) as SandboxItem[]);
-    const nextLinks = snapshot?.links ?? (cloneSandboxExperiment([], linksRef.current).links as SandboxLink[]);
+    if (!runSnapshotRef.current) return;
+    runningRef.current = false;
+    const snapshot = cloneSandboxExperiment(runSnapshotRef.current.items, runSnapshotRef.current.links) as ExperimentSnapshot;
+    const nextItems = snapshot.items;
+    const nextLinks = snapshot.links;
     itemsRef.current = nextItems;
     linksRef.current = nextLinks;
     setItems(nextItems);
     setLinks(nextLinks);
     setSnapGuide(null);
     setRunning(false);
+    setRulerActive(false);
+    setRulerIds([]);
+    resetMotionRecording(nextItems);
+  };
+
+  const editSetup = () => {
+    const snapshot = runSnapshotRef.current
+      ? cloneSandboxExperiment(runSnapshotRef.current.items, runSnapshotRef.current.links) as ExperimentSnapshot
+      : null;
+    if (snapshot) {
+      itemsRef.current = snapshot.items;
+      linksRef.current = snapshot.links;
+      setItems(snapshot.items);
+      setLinks(snapshot.links);
+    }
+    initializedRef.current = false;
+    runningRef.current = false;
+    setInitialized(false);
+    setRunning(false);
     runSnapshotRef.current = null;
+    simulationTimeRef.current = 0;
+    lastMotionSampleRef.current = 0;
+    motionHistoryRef.current = [];
+    setSimulationTime(0);
+    setMotionHistory([]);
+    setShowGraph(false);
   };
 
   const loadStarter = () => {
+    if (initialized) return;
     recordHistory();
-    setItems(createStarterSandbox());
+    const nextItems = createStarterSandbox() as SandboxItem[];
+    itemsRef.current = nextItems;
+    linksRef.current = [];
+    setItems(nextItems);
     setLinks([]);
     setSelectedItemId(null);
     setSelectedLinkId(null);
@@ -1318,10 +1595,18 @@ export default function SandboxLab() {
     setPulleyLinkId(null);
     setSnapGuide(null);
     setRunning(false);
+    runSnapshotRef.current = null;
+    simulationTimeRef.current = 0;
+    motionHistoryRef.current = [];
+    setSimulationTime(0);
+    setMotionHistory([]);
   };
 
   const clear = () => {
+    if (initialized) return;
     if (itemsRef.current.length || linksRef.current.length) recordHistory();
+    itemsRef.current = [];
+    linksRef.current = [];
     setItems([]);
     setLinks([]);
     setSelectedItemId(null);
@@ -1332,6 +1617,67 @@ export default function SandboxLab() {
     setPulleyLinkId(null);
     setSnapGuide(null);
     setRunning(false);
+    runSnapshotRef.current = null;
+    simulationTimeRef.current = 0;
+    motionHistoryRef.current = [];
+    setSimulationTime(0);
+    setMotionHistory([]);
+  };
+
+  const generateProjectCode = () => {
+    runningRef.current = false;
+    setRunning(false);
+    const code = encodeSandboxProject(itemsRef.current, linksRef.current);
+    setProjectCode(code);
+    setProjectMessage("Project code generated from the current sandbox state.");
+  };
+
+  const copyProjectCode = async () => {
+    if (!projectCode) return;
+    try {
+      await navigator.clipboard.writeText(projectCode);
+      setProjectMessage("Project code copied.");
+    } catch {
+      setProjectMessage("Copy was blocked. Select the code and copy it manually.");
+    }
+  };
+
+  const loadProject = () => {
+    try {
+      const project = decodeSandboxProject(loadCode) as ExperimentSnapshot;
+      if (itemsRef.current.length || linksRef.current.length) recordHistory();
+      itemsRef.current = project.items;
+      linksRef.current = project.links;
+      setItems(project.items);
+      setLinks(project.links);
+      counterRef.current = nextProjectCounter(project.items, project.links);
+      selectedItemIdRef.current = null;
+      selectedLinkIdRef.current = null;
+      setSelectedItemId(null);
+      setSelectedLinkId(null);
+      setConnectorTool(null);
+      setLinkStartId(null);
+      setLinkPulleyIds([]);
+      setPulleyLinkId(null);
+      setRulerActive(false);
+      setRulerIds([]);
+      setSnapGuide(null);
+      initializedRef.current = false;
+      runningRef.current = false;
+      setInitialized(false);
+      setRunning(false);
+      runSnapshotRef.current = null;
+      simulationTimeRef.current = 0;
+      lastMotionSampleRef.current = 0;
+      motionHistoryRef.current = [];
+      setSimulationTime(0);
+      setMotionHistory([]);
+      setShowGraph(false);
+      setGraphObjectId(null);
+      setProjectMessage(`Loaded ${project.items.length} objects and ${project.links.length} connections.`);
+    } catch (error) {
+      setProjectMessage(error instanceof Error ? error.message : "This project code could not be loaded.");
+    }
   };
 
   const dynamicCount = items.filter((item) => isDynamicItem(item) && !isFixedItem(item)).length;
@@ -1349,7 +1695,8 @@ export default function SandboxLab() {
                 <button
                   key={tool.type}
                   type="button"
-                  draggable
+                  draggable={!initialized}
+                  disabled={initialized}
                   className={connectorTool === tool.type ? "active" : ""}
                   onDragStart={(event) => handlePaletteDrag(event, tool.type)}
                   onClick={() => addTool(tool.type)}
@@ -1361,17 +1708,37 @@ export default function SandboxLab() {
               ))}
             </div>
           ))}
+          <div className="sandbox-tool-group sandbox-ruler-tools">
+            <h3>Measure</h3>
+            <button type="button" className={rulerActive ? "active" : ""} onClick={toggleRuler} aria-pressed={rulerActive}>
+              <span aria-hidden="true">↔</span>
+              <span><strong>Ruler</strong><small>Select two objects to measure between them.</small></span>
+            </button>
+            {rulerActive && <div className="sandbox-ruler-options">
+              <span>Measure from</span>
+              <div role="group" aria-label="Ruler measurement points">
+                <button type="button" className={rulerBasis === "center" ? "active" : ""} onClick={() => setRulerBasis("center")}>Centers</button>
+                <button type="button" className={rulerBasis === "edge" ? "active" : ""} onClick={() => setRulerBasis("edge")}>Outer edges</button>
+              </div>
+              <small>{rulerIds.length === 0 ? "Choose the first object." : rulerIds.length === 1 ? "Choose the second object." : `${rulerMeasurement?.distance.toFixed(3) ?? "0.000"} m`}</small>
+              {rulerIds.length > 0 && <button type="button" onClick={() => setRulerIds([])}>Clear measurement</button>}
+            </div>}
+          </div>
         </aside>
 
         <div className="sandbox-center">
           <div className="sandbox-toolbar">
             <div className="sandbox-run-controls">
-              <button type="button" className="sandbox-run" onClick={toggleRun}>{running ? "Ⅱ Pause" : "▶ Run"}</button>
-              <button type="button" onClick={stepOnce}>Step</button>
-              <button type="button" onClick={reset}>Reset</button>
-              <button type="button" onClick={undo} disabled={undoCount === 0} aria-label="Undo last sandbox edit" aria-keyshortcuts="Control+Z Meta+Z">Undo</button>
+              <button type="button" className="sandbox-run" onClick={initializeRun} disabled={initialized || running || items.length === 0}>Run / Initialize</button>
+              <button type="button" className="sandbox-play" onClick={togglePlayback} disabled={!initialized}>{running ? "Ⅱ Pause" : "▶ Play"}</button>
+              <button type="button" onClick={stepOnce} disabled={!initialized || running}>Step</button>
+              <button type="button" onClick={reset} disabled={!initialized}>Reset</button>
+              <button type="button" onClick={editSetup} disabled={!initialized}>Edit setup</button>
+              <button type="button" onClick={undo} disabled={undoCount === 0 || initialized} aria-label="Undo last sandbox edit" aria-keyshortcuts="Control+Z Meta+Z">Undo</button>
             </div>
             <div className="sandbox-toolbar-meta">
+              <span className={`sandbox-run-state ${running ? "running" : initialized ? "paused" : "setup"}`}><i />{running ? "Playing" : initialized ? "Paused" : "Setup"}</span>
+              <span>{simulationTime.toFixed(2)} s</span>
               <span>{dynamicCount} moving</span>
               <span>{links.length} connected</span>
               <span>{SANDBOX_WORLD_WIDTH}×{SANDBOX_WORLD_HEIGHT} rigid grid</span>
@@ -1401,7 +1768,7 @@ export default function SandboxLab() {
             onWheel={handleStageWheel}
           >
             <div
-              className={`sandbox-world ${connectorTool || pulleyLinkId ? "connecting" : ""} ${showHitboxes ? "show-hitboxes" : ""}`}
+              className={`sandbox-world ${connectorTool || pulleyLinkId ? "connecting" : ""} ${showHitboxes ? "show-hitboxes" : ""} ${rulerActive ? "measuring" : ""}`}
               style={{
                 width: `${SANDBOX_WORLD_WIDTH * CANVAS_PIXELS_PER_UNIT}px`,
                 height: `${SANDBOX_WORLD_HEIGHT * CANVAS_PIXELS_PER_UNIT}px`,
@@ -1420,6 +1787,15 @@ export default function SandboxLab() {
             <div className="sandbox-left-wall" aria-hidden="true" />
             <div className="sandbox-right-wall" aria-hidden="true" />
             <div className="sandbox-floor" aria-hidden="true" />
+            {rulerMeasurement && <svg className="sandbox-ruler-layer" viewBox={`0 0 ${SANDBOX_WORLD_WIDTH} ${SANDBOX_WORLD_HEIGHT}`} preserveAspectRatio="none" aria-label={`${rulerMeasurement.distance.toFixed(3)} meter ruler measurement`}>
+              <line x1={rulerMeasurement.start.x} y1={rulerMeasurement.start.y} x2={rulerMeasurement.end.x} y2={rulerMeasurement.end.y} />
+              <circle cx={rulerMeasurement.start.x} cy={rulerMeasurement.start.y} r="1.4" />
+              <circle cx={rulerMeasurement.end.x} cy={rulerMeasurement.end.y} r="1.4" />
+              <g transform={`translate(${(rulerMeasurement.start.x + rulerMeasurement.end.x) / 2} ${(rulerMeasurement.start.y + rulerMeasurement.end.y) / 2})`}>
+                <rect x="-8" y="-3" width="16" height="6" rx="1" />
+                <text textAnchor="middle" dominantBaseline="middle">{rulerMeasurement.distance.toFixed(3)} m</text>
+              </g>
+            </svg>}
             <svg className="sandbox-rope-layer" viewBox={`0 0 ${SANDBOX_WORLD_WIDTH} ${SANDBOX_WORLD_HEIGHT}`} preserveAspectRatio="none" aria-label="Rope connections">
               {ropeRoutes.map(({ link, route, a, b }) => {
                 if (!a || !b || route.points.length < 2) return null;
@@ -1484,7 +1860,7 @@ export default function SandboxLab() {
               return (
                 <div
                   key={item.id}
-                  className={`sandbox-entity entity-${item.type} ${item.type === "incline" && item.angle < 0 ? "flipped" : ""} ${selectedItemId === item.id ? "selected" : ""} ${linkStartId === item.id ? "link-start" : ""} ${pulleyLinkId && item.type === "pulley" ? "pulley-target" : ""} ${activeSnap ? "snapping" : ""}`}
+                  className={`sandbox-entity entity-${item.type} ${item.type === "incline" && item.angle < 0 ? "flipped" : ""} ${selectedItemId === item.id ? "selected" : ""} ${rulerIds.includes(item.id) ? "ruler-point" : ""} ${linkStartId === item.id ? "link-start" : ""} ${pulleyLinkId && item.type === "pulley" ? "pulley-target" : ""} ${activeSnap ? "snapping" : ""}`}
                   style={{
                     left: `${item.x * CANVAS_PIXELS_PER_UNIT}px`,
                     top: `${item.y * CANVAS_PIXELS_PER_UNIT}px`,
@@ -1504,6 +1880,7 @@ export default function SandboxLab() {
                   tabIndex={0}
                   aria-label={`${item.label} at ${item.x.toFixed(0)}, ${item.y.toFixed(0)}`}
                   onClick={() => {
+                    if (rulerActive) return;
                     if (connectorClickRef.current === item.id) {
                       connectorClickRef.current = null;
                       return;
@@ -1513,7 +1890,8 @@ export default function SandboxLab() {
                   onKeyDown={(event) => {
                     if (event.key !== "Enter" && event.key !== " ") return;
                     event.preventDefault();
-                    if (pulleyLinkId && item.type === "pulley") addPulleyToLink(pulleyLinkId, item.id);
+                    if (rulerActive) chooseRulerPoint(item.id);
+                    else if (pulleyLinkId && item.type === "pulley") addPulleyToLink(pulleyLinkId, item.id);
                     else if (connectorTool) chooseEndpoint(item.id);
                     else if (!pulleyLinkId) selectItem(item.id);
                   }}
@@ -1543,7 +1921,7 @@ export default function SandboxLab() {
                     aria-label={pulleyLinkId ? `Route selected rope around ${item.label}` : `Use ${item.label} for ${connectorTool} connection`}
                   ><span aria-hidden="true">{portLabel}</span></button>}
                   {activeSnap && <span className="sandbox-snap-badge">{activeSnap.smooth ? "SMOOTH JOIN" : "SNAP"} → {activeSnap.targetLabel}</span>}
-                  {selectedItemId === item.id && !running && !connectorTool && !pulleyLinkId && (
+                  {selectedItemId === item.id && !initialized && !running && !connectorTool && !pulleyLinkId && (
                     item.type === "pendulum"
                       ? <button
                         type="button"
@@ -1608,14 +1986,51 @@ export default function SandboxLab() {
             </div>
           </div>
 
-          <div className="sandbox-stage-actions"><button type="button" onClick={loadStarter}>Load sample</button><button type="button" onClick={clear}>Clear</button></div>
+          <div className="sandbox-stage-actions">
+            <button type="button" onClick={loadStarter} disabled={initialized}>Load sample</button>
+            <button type="button" onClick={clear} disabled={initialized}>Clear</button>
+            <button type="button" className={projectPanelOpen ? "active" : ""} onClick={() => { runningRef.current = false; setRunning(false); setProjectPanelOpen((current) => !current); }}>Save / Load code</button>
+            <button type="button" className={showGraph ? "active" : ""} disabled={!initialized || graphableItems.length === 0} onClick={() => setShowGraph((current) => !current)}>Live graph</button>
+            <span>{initialized ? "Reset returns to the Run baseline" : "Build the setup, then initialize the run"}</span>
+          </div>
+          {projectPanelOpen && <section className="sandbox-project-panel" aria-label="Save or load a PhysicsLab project code">
+            <div>
+              <header><span>Save project</span><small>Letters and numbers only</small></header>
+              <p>Generate a portable code for the objects, values, and connections currently in the sandbox.</p>
+              <textarea aria-label="Generated PhysicsLab project code" readOnly value={projectCode} placeholder="Choose Generate code" onFocus={(event) => event.currentTarget.select()} />
+              <div><button type="button" onClick={generateProjectCode}>Generate code</button><button type="button" onClick={copyProjectCode} disabled={!projectCode}>Copy code</button></div>
+            </div>
+            <div>
+              <header><span>Load project</span><small>Restores an editable setup</small></header>
+              <p>Paste a PhysicsLab code to replace the current sandbox and return to setup mode.</p>
+              <textarea aria-label="PhysicsLab project code to load" value={loadCode} onChange={(event) => setLoadCode(event.target.value)} placeholder="Paste a PHY1… code" />
+              <div><button type="button" onClick={loadProject} disabled={!loadCode.trim()}>Load code</button></div>
+            </div>
+            {projectMessage && <output className="sandbox-project-message">{projectMessage}</output>}
+          </section>}
+          {showGraph && initialized && <section className="sandbox-graph-panel">
+            <div className="sandbox-graph-object-tabs" role="group" aria-label="Object shown on the graph">
+              <span>Tracked object</span>
+              {graphableItems.map((item) => <button key={item.id} type="button" className={trackedGraphObject?.id === item.id ? "active" : ""} onClick={() => setGraphObjectId(item.id)}>{item.label} <small>{item.id.split("-").at(-1)}</small></button>)}
+            </div>
+            {trackedGraphObject
+              ? <SandboxGraph key={`${runGeneration}-${trackedGraphObject.id}`} history={motionHistory} objectId={trackedGraphObject.id} objectLabel={`${trackedGraphObject.label} ${trackedGraphObject.id.split("-").at(-1)}`} currentTime={simulationTime} />
+              : <p className="sandbox-graph-empty">Add a moving object to record a graph.</p>}
+          </section>}
         </div>
 
         <aside className="sandbox-inspector" aria-label="Selected item properties">
-          <div className="sandbox-panel-title"><span>Properties</span><small>{selectedItem ? selectedItem.label : selectedLink?.type ?? "Select an object"}</small>{(selectedItem || selectedLink) && <button type="button" onClick={clearSelection} aria-label="Clear selected properties">×</button>}</div>
+          <div className="sandbox-panel-title"><span>{initialized ? "Measurements" : "Properties"}</span><small>{selectedItem ? selectedItem.label : selectedLink?.type ?? (initialized ? `${simulationTime.toFixed(2)} s` : "Select an object")}</small>{(selectedItem || selectedLink) && <button type="button" onClick={clearSelection} aria-label="Clear selected properties">×</button>}</div>
           {selectedItem ? (
             <div className="sandbox-properties">
               <div className="sandbox-selection-name"><span aria-hidden="true">{ICONS[selectedItem.type]}</span><div><strong>{selectedItem.label}</strong><small>{isFixedItem(selectedItem) ? "Anchored structure" : selectedItem.type === "pendulum" ? "Oscillating system" : "Dynamic object"}</small></div></div>
+              {initialized ? (
+                running
+                  ? <div className="sandbox-pause-to-inspect"><span>▶</span><strong>Simulation playing</strong><p>Pause the run to inspect velocity, energy, acceleration, and the free-body diagram.</p></div>
+                  : selectedAnalysis
+                    ? <LiveObjectInspection item={selectedItem} analysis={selectedAnalysis} />
+                    : <div className="sandbox-pause-to-inspect"><strong>No motion data</strong><p>This structure does not have a dynamic force reading.</p></div>
+              ) : <>
               {(["block", "ball", "cart", "rod", "wheel", "pendulum", "pulley"].includes(selectedItem.type)) && <NumberControl label="Mass" value={selectedItem.mass} min={0.2} max={12} step={0.1} unit="kg" onChange={(value) => updateItem(selectedItem.id, "mass", value)} />}
               {!["gravity-region", "platform"].includes(selectedItem.type) && <NumberControl label={selectedItem.type === "incline" || selectedItem.type === "rod" ? "Length" : "Size"} value={selectedItem.size} min={1} max={8} step={1} unit="m" onChange={(value) => updateItem(selectedItem.id, "size", value)} />}
               {selectedItem.type === "platform" && <><NumberControl label="Platform length" value={selectedItem.width} min={1} max={12} step={1} unit="m" onChange={(value) => updateItem(selectedItem.id, "width", value)} /><NumberControl label="Platform height" value={selectedItem.height} min={1} max={5} step={1} unit="m" onChange={(value) => updateItem(selectedItem.id, "height", value)} /></>}
@@ -1630,6 +2045,7 @@ export default function SandboxLab() {
               {selectedItem.type === "gravity-region" && <><NumberControl label="Field width" value={selectedItem.width} min={1} max={14} step={1} unit="m" onChange={(value) => updateItem(selectedItem.id, "width", value)} /><NumberControl label="Field height" value={selectedItem.height} min={1} max={12} step={1} unit="m" onChange={(value) => updateItem(selectedItem.id, "height", value)} /><NumberControl label="Gravity strength" value={selectedItem.gravityStrength} min={0} max={25} step={0.1} unit="m/s²" onChange={(value) => updateItem(selectedItem.id, "gravityStrength", value)} /><NumberControl label="Gravity direction" value={selectedItem.gravityDirection} min={-180} max={180} step={1} unit="°" onChange={(value) => updateItem(selectedItem.id, "gravityDirection", value)} /></>}
               {selectedItem.type === "pulley" && <label className="sandbox-check"><input type="checkbox" checked={selectedItem.fixed} onChange={(event) => updateItem(selectedItem.id, "fixed", event.target.checked)} /><span>Fixed pulley</span></label>}
               <button type="button" className="sandbox-delete" onClick={removeSelected} aria-keyshortcuts="Backspace Delete">Remove {selectedItem.label.toLowerCase()}</button>
+              </>}
             </div>
           ) : selectedLink ? (
             <div className="sandbox-properties">
@@ -1641,6 +2057,7 @@ export default function SandboxLab() {
                 {selectedLink.type === "rope" && selectedLink.pulleys.length > 0 && <i aria-hidden="true">→</i>}
                 <span><small>End</small><strong>{itemsById.get(selectedLink.b)?.label ?? "Missing"}</strong></span>
               </div>
+              {initialized ? <div className="sandbox-pause-to-inspect"><strong>Connection locked for this run</strong><p>Choose Edit setup to change its length, stiffness, or pulley route.</p></div> : <>
               <NumberControl label="Natural length" value={selectedLink.naturalLength} min={0.25} max={300} step={0.05} unit="m" onChange={(value) => updateLink(selectedLink.id, "naturalLength", value)} />
               {selectedLink.type === "spring" && <NumberControl label="Spring constant" value={selectedLink.springConstant} min={2} max={80} step={1} unit="N/m" onChange={(value) => updateLink(selectedLink.id, "springConstant", value)} />}
               {selectedLink.type === "rope" && <label className="sandbox-check"><input type="checkbox" checked={selectedLink.verticalSnap} onChange={(event) => setRopeVerticalSnap(selectedLink.id, event.target.checked)} /><span>Auto-snap hanging ends vertically</span></label>}
@@ -1659,8 +2076,9 @@ export default function SandboxLab() {
                 <button type="button" className={pulleyLinkId === selectedLink.id ? "active" : ""} aria-pressed={pulleyLinkId === selectedLink.id} onClick={() => { setPulleyLinkId((current) => current === selectedLink.id ? null : selectedLink.id); setConnectorTool(null); setLinkStartId(null); setLinkPulleyIds([]); setRunning(false); }}>{pulleyLinkId === selectedLink.id ? "Done adding pulleys" : "Add pulleys to route"}</button>
               </div>}
               <button type="button" className="sandbox-delete" onClick={removeSelected} aria-keyshortcuts="Backspace Delete">Remove connection</button>
+              </>}
             </div>
-          ) : <div className="sandbox-inspector-empty"><span aria-hidden="true">↖</span><strong>Select an object</strong><p>Its dimensions, motion, and connection settings will stay here beside the grid.</p></div>}
+          ) : <div className="sandbox-inspector-empty"><span aria-hidden="true">↖</span><strong>{initialized ? running ? "Run in progress" : "Select an object" : "Select an object"}</strong><p>{initialized ? running ? "Pause to inspect live motion data and free-body diagrams." : "Choose an object to inspect its exact state at this moment." : "Its dimensions, motion, and connection settings will stay here beside the grid."}</p></div>}
         </aside>
       </div>
     </section>

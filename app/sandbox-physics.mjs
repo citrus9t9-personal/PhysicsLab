@@ -1435,6 +1435,112 @@ export function stepSandbox(items, links, deltaSeconds) {
   return next;
 }
 
+function displayedMotionState(item) {
+  if (item.type !== "pendulum") {
+    return { x: item.x, y: item.y, vx: item.vx, vy: item.vy };
+  }
+  const theta = radians(item.angle);
+  const arm = item.length * WORLD_SCALE;
+  return {
+    x: item.x - Math.sin(theta) * arm,
+    y: item.y + Math.cos(theta) * arm,
+    vx: -Math.cos(theta) * item.length * item.angularVelocity,
+    vy: -Math.sin(theta) * item.length * item.angularVelocity,
+  };
+}
+
+export function getSandboxAnalysis(items, links, itemId) {
+  const item = items.find((candidate) => candidate.id === itemId);
+  if (!item) return null;
+  const current = displayedMotionState(item);
+  const sampleDelta = 1 / 600;
+  const stepped = stepSandbox(items, links, sampleDelta).find((candidate) => candidate.id === itemId) ?? item;
+  const future = displayedMotionState(stepped);
+  const acceleration = {
+    x: (future.vx - current.vx) / sampleDelta,
+    y: (future.vy - current.vy) / sampleDelta,
+  };
+  const mass = Math.max(item.mass, 0.01);
+  const gravity = gravityFor(item, items);
+  const forces = [];
+  const addForce = (label, x, y, tone = "green") => {
+    const magnitude = Math.hypot(x, y);
+    if (magnitude > 0.01) forces.push({ label, x, y, magnitude, tone });
+  };
+  const respondsToGravity = isDynamicItem(item) || item.type === "pendulum" || (item.type === "rod" && item.anchorEnabled);
+  if (respondsToGravity) addForce("Weight", mass * gravity.x, mass * gravity.y, "orange");
+
+  const bounds = getItemBounds(item);
+  const onGround = Math.abs(bounds.bottom - GROUND_Y) < 0.02;
+  const surface = items.find((candidate) => candidate.id === item.supportSurfaceId) ?? null;
+  const hasSurfaceSupport = Boolean(item.supportSurfaceId) || onGround || item.type === "cart";
+  if (hasSurfaceSupport && item.type !== "pendulum") {
+    const surfaceAngle = surface
+      ? supportAngleFor(surface) ?? 0
+      : item.supportSurfaceAngle ?? 0;
+    const tangent = { x: Math.cos(radians(surfaceAngle)), y: Math.sin(radians(surfaceAngle)) };
+    const normal = { x: tangent.y, y: -tangent.x };
+    const normalMagnitude = Math.max(0, -mass * dot(gravity, normal));
+    addForce(item.type === "cart" ? "Track normal" : "Normal", normal.x * normalMagnitude, normal.y * normalMagnitude);
+
+    const coefficient = clamp(Math.max(item.friction ?? 0, surface?.friction ?? 0), 0, 1);
+    const tangentVelocity = current.vx * tangent.x + current.vy * tangent.y;
+    const gravityAlong = mass * dot(gravity, tangent);
+    let frictionMagnitude = 0;
+    let frictionDirection = 0;
+    if (Math.abs(tangentVelocity) > 0.001) {
+      frictionMagnitude = coefficient * normalMagnitude;
+      frictionDirection = -Math.sign(tangentVelocity);
+    } else if (coefficient > 0) {
+      frictionMagnitude = Math.min(Math.abs(gravityAlong), coefficient * normalMagnitude);
+      frictionDirection = -Math.sign(gravityAlong);
+    }
+    addForce("Friction", tangent.x * frictionMagnitude * frictionDirection, tangent.y * frictionMagnitude * frictionDirection, "blue");
+  }
+
+  for (const link of links) {
+    if (link.type !== "spring" || (link.a !== item.id && link.b !== item.id)) continue;
+    const other = items.find((candidate) => candidate.id === (link.a === item.id ? link.b : link.a));
+    if (!other) continue;
+    const itemPoint = getConnectionAnchor(item, other);
+    const otherPoint = getConnectionAnchor(other, item);
+    const offset = { x: otherPoint.x - itemPoint.x, y: otherPoint.y - itemPoint.y };
+    const springLength = Math.max(Math.hypot(offset.x, offset.y), 0.001);
+    const direction = { x: offset.x / springLength, y: offset.y / springLength };
+    const magnitude = link.springConstant * (springLength / WORLD_SCALE - link.naturalLength);
+    addForce("Spring", direction.x * magnitude, direction.y * magnitude, "blue");
+  }
+
+  const netForce = { x: mass * acceleration.x, y: mass * acceleration.y };
+  const knownForce = forces.reduce((sum, force) => ({ x: sum.x + force.x, y: sum.y + force.y }), { x: 0, y: 0 });
+  const residual = { x: netForce.x - knownForce.x, y: netForce.y - knownForce.y };
+  const hasRope = links.some((link) => link.type === "rope" && (
+    link.a === item.id || link.b === item.id || (link.pulleys ?? []).some((pulley) => pulley.id === item.id)
+  ));
+  addForce(item.type === "pendulum" || hasRope ? "Tension" : item.anchorEnabled ? "Anchor" : "Constraint", residual.x, residual.y, "purple");
+
+  const speed = Math.hypot(current.vx, current.vy);
+  const rotationalEnergy = 0.5 * Math.max(item.inertia ?? 0, 0) * (item.angularVelocity ?? 0) ** 2;
+  const potentialEnergy = -mass * (
+    gravity.x * ((current.x - LEFT_WALL_X) / WORLD_SCALE) +
+    gravity.y * ((current.y - GROUND_Y) / WORLD_SCALE)
+  );
+  return {
+    position: {
+      x: current.x / WORLD_SCALE,
+      height: (GROUND_Y - current.y) / WORLD_SCALE,
+    },
+    velocity: { x: current.vx, y: current.vy, magnitude: speed },
+    acceleration: { ...acceleration, magnitude: Math.hypot(acceleration.x, acceleration.y) },
+    momentum: { x: mass * current.vx, y: mass * current.vy, magnitude: mass * speed },
+    netForce: { ...netForce, magnitude: Math.hypot(netForce.x, netForce.y) },
+    kineticEnergy: 0.5 * mass * speed ** 2 + rotationalEnergy,
+    potentialEnergy,
+    totalEnergy: 0.5 * mass * speed ** 2 + rotationalEnergy + potentialEnergy,
+    forces,
+  };
+}
+
 export function cloneSandboxExperiment(items, links) {
   return {
     items: items.map((item) => ({ ...item })),
