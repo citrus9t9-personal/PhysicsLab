@@ -756,7 +756,19 @@ function inclineSurfaceManifold(item, incline) {
   return best;
 }
 
-function resolveStaticCollision(item, surface) {
+function applyContactFriction(item, tangent, coefficient, normalAcceleration, delta) {
+  if (delta <= 0 || coefficient <= 0 || normalAcceleration <= 0) return;
+  const tangentVelocity = item.vx * tangent.x + item.vy * tangent.y;
+  const speedChange = Math.min(
+    Math.abs(tangentVelocity),
+    coefficient * normalAcceleration * delta,
+  );
+  const signedChange = Math.sign(tangentVelocity) * speedChange;
+  item.vx -= signedChange * tangent.x;
+  item.vy -= signedChange * tangent.y;
+}
+
+function resolveStaticCollision(item, surface, delta = 0, gravity = { x: 0, y: 9.81 }) {
   let manifold = item.type === "block" && surface.type === "incline"
     ? inclineSurfaceManifold(item, surface)
     : null;
@@ -787,10 +799,8 @@ function resolveStaticCollision(item, surface) {
   }
 
   const tangent = { x: -normal.y, y: normal.x };
-  const tangentVelocity = item.vx * tangent.x + item.vy * tangent.y;
-  const friction = clamp((item.friction + (surface.friction ?? 0)) * 0.035, 0, 0.18);
-  item.vx -= tangentVelocity * friction * tangent.x;
-  item.vy -= tangentVelocity * friction * tangent.y;
+  const friction = clamp(Math.max(item.friction ?? 0, surface.friction ?? 0), 0, 1);
+  applyContactFriction(item, tangent, friction, Math.abs(dot(gravity, normal)), delta);
   return manifold;
 }
 
@@ -1162,10 +1172,14 @@ function supportAngleFor(surface) {
   return null;
 }
 
-function resolveEnvironment(item, items) {
+function resolveEnvironment(item, items, delta = 0) {
   const environmentIncomingSpeed = Math.hypot(item.vx, item.vy);
+  const gravity = gravityFor(item, items);
   const enteringJoin = blockEnteringJoinedIncline(item, items);
   const boundary = keepInsideStage(item, enteringJoin?.id === "world-ground");
+  if (boundary.ground) {
+    applyContactFriction(item, { x: 1, y: 0 }, clamp(item.friction ?? 0, 0, 1), Math.abs(gravity.y), delta);
+  }
   let support = boundary.ground
     ? { id: "world-ground", angle: 0, strength: 1, incomingSpeed: environmentIncomingSpeed }
     : null;
@@ -1175,12 +1189,12 @@ function resolveEnvironment(item, items) {
     if (surface.type === "pulley" && !surface.fixed) continue;
     if (enteringJoin?.id === surface.id) continue;
     if (surface.type === "incline" && blockHasClearedJoinedIncline(item, surface, items)) continue;
-    const manifold = resolveStaticCollision(item, surface);
+    const manifold = resolveStaticCollision(item, surface, delta, gravity);
     const surfaceAngle = supportAngleFor(surface);
     if (!manifold || manifold.normal.y <= 0.35 || surfaceAngle === null) continue;
     if (item.type === "block" && Math.abs(item.angle - surfaceAngle) > 0.001) {
       item.angle = surfaceAngle;
-      resolveStaticCollision(item, surface);
+      resolveStaticCollision(item, surface, 0, gravity);
     }
     if (!support || manifold.normal.y > support.strength) {
       support = {
@@ -1352,8 +1366,7 @@ function stepAnchoredRod(item, items, delta) {
   return true;
 }
 
-export function stepSandbox(items, links, deltaSeconds) {
-  const delta = Math.min(Math.max(deltaSeconds, 0), 0.04);
+function stepSandboxSlice(items, links, delta) {
   const next = items.map((item) => ({ ...item }));
   const supportById = new Map();
   releaseLegacySnapAttachments(next);
@@ -1377,7 +1390,7 @@ export function stepSandbox(items, links, deltaSeconds) {
     if (atwoodParticipants.has(item.id)) {
       item.x += item.vx * WORLD_SCALE * delta;
       item.y += item.vy * WORLD_SCALE * delta;
-      const support = resolveEnvironment(item, next);
+      const support = resolveEnvironment(item, next, delta);
       if (support) supportById.set(item.id, support);
       continue;
     }
@@ -1393,7 +1406,7 @@ export function stepSandbox(items, links, deltaSeconds) {
     item.x += item.vx * WORLD_SCALE * delta;
     item.y += item.vy * WORLD_SCALE * delta;
     if (item.type === "wheel") item.angle += (item.vx / Math.max(item.radius, 0.2)) * delta * (180 / Math.PI);
-    const support = transitionBlockAcrossJoinedSurface(item, next) ?? resolveEnvironment(item, next);
+    const support = transitionBlockAcrossJoinedSurface(item, next) ?? resolveEnvironment(item, next, delta);
     if (support) supportById.set(item.id, support);
   }
 
@@ -1403,10 +1416,22 @@ export function stepSandbox(items, links, deltaSeconds) {
   const atwoodLinks = new Set(atwoodSystems.map((system) => system.link));
   solveRopes(next, links.filter((link) => !atwoodLinks.has(link)));
   for (const item of next.filter((candidate) => isDynamicItem(candidate) && !isFixedItem(candidate))) {
-    const support = resolveEnvironment(item, next) ?? supportById.get(item.id) ?? null;
+    const support = resolveEnvironment(item, next, 0) ?? supportById.get(item.id) ?? null;
     updateBlockSupport(item, support, delta);
   }
   applyPulleyRopeGuides(next, links);
+  return next;
+}
+
+export function stepSandbox(items, links, deltaSeconds) {
+  const totalDelta = Math.min(Math.max(deltaSeconds, 0), 0.1);
+  if (totalDelta === 0) return stepSandboxSlice(items, links, 0);
+  const substepCount = Math.max(1, Math.ceil(totalDelta / (1 / 120)));
+  const substepDelta = totalDelta / substepCount;
+  let next = items;
+  for (let step = 0; step < substepCount; step += 1) {
+    next = stepSandboxSlice(next, links, substepDelta);
+  }
   return next;
 }
 

@@ -213,6 +213,56 @@ test("dynamic bodies advance under gravity while carts stay on their track", () 
   assert.ok(nextCart.x > cart.x);
 });
 
+test("sandbox motion is independent of common display frame rates", () => {
+  const simulate = (delta, frames) => {
+    let items = [createSandboxItem("ball", "ball", 250, 100)];
+    items[0].vx = 3;
+    items[0].vy = -2;
+    for (let frame = 0; frame < frames; frame += 1) {
+      items = stepSandbox(items, [], delta);
+    }
+    return items[0];
+  };
+
+  const atThirtyFps = simulate(1 / 30, 30);
+  const atSixtyFps = simulate(1 / 60, 60);
+  const atOneTwentyFps = simulate(1 / 120, 120);
+
+  for (const property of ["x", "y", "vx", "vy"]) {
+    assert.ok(Math.abs(atThirtyFps[property] - atSixtyFps[property]) < 1e-9, property);
+    assert.ok(Math.abs(atSixtyFps[property] - atOneTwentyFps[property]) < 1e-9, property);
+  }
+});
+
+test("a long rendered frame advances the full requested simulation time", () => {
+  const cart = createSandboxItem("cart", "cart", 100, 100);
+  cart.vx = 2;
+
+  const next = stepSandbox([cart], [], 0.08)[0];
+
+  assert.ok(Math.abs(next.x - (cart.x + cart.vx * WORLD_SCALE * 0.08)) < 1e-9);
+});
+
+test("ground friction uses physical elapsed time instead of frame count", () => {
+  const simulate = (delta, frames) => {
+    const block = createSandboxItem("block", "block", 250, GROUND_Y - WORLD_SCALE / 2);
+    block.vx = 5;
+    block.friction = 0.2;
+    let items = [block];
+    for (let frame = 0; frame < frames; frame += 1) {
+      items = stepSandbox(items, [], delta);
+    }
+    return items[0];
+  };
+
+  const atThirtyFps = simulate(1 / 30, 30);
+  const atOneTwentyFps = simulate(1 / 120, 120);
+  const expectedVelocity = 5 - 0.2 * 9.81;
+
+  assert.ok(Math.abs(atThirtyFps.vx - atOneTwentyFps.vx) < 1e-9);
+  assert.ok(Math.abs(atOneTwentyFps.vx - expectedVelocity) < 1e-9);
+});
+
 test("gravity regions override gravity direction inside their bounds", () => {
   const region = createSandboxItem("gravity-region", "region", 50, 50);
   region.gravityDirection = 0;
@@ -469,11 +519,11 @@ test("the set ground and placed surfaces reflect perfectly elastically", () => {
   ball.y = GROUND_Y - getItemHitbox(ball).radius + 0.1;
   ball.vx = 0;
   ball.vy = 2;
-  const next = stepSandbox([platform, incline, ball], [], 0.04).find((item) => item.id === "ball");
+  const next = stepSandbox([platform, incline, ball], [], 0).find((item) => item.id === "ball");
 
   assert.equal(platform.restitution, 1);
   assert.equal(incline.restitution, 1);
-  assert.ok(next.vy < -2);
+  assert.equal(next.vy, -2);
 });
 
 test("every edge of the sandbox is a rigid elastic wall", () => {
