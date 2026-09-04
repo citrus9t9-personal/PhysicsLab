@@ -2393,11 +2393,6 @@ h1 em {
   text-transform: uppercase;
 }
 
-.sandbox-ruler-options > div {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-}
-
 .sandbox-ruler-options button {
   min-height: 31px;
   padding: 0 6px;
@@ -2407,9 +2402,90 @@ h1 em {
   text-align: center;
 }
 
-.sandbox-ruler-options button + button { border-left: 0; }
-.sandbox-ruler-options button.active { background: var(--blue); color: white; }
+.sandbox-ruler-options p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.55rem;
+  line-height: 1.45;
+}
+
 .sandbox-ruler-options > small { color: var(--blue); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.54rem; font-weight: 800; }
+.sandbox-ruler-options output {
+  display: block;
+  padding: 4px 6px;
+  border-left: 3px solid var(--blue);
+  background: var(--blue-soft);
+  color: var(--ink);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.5rem;
+  line-height: 1.3;
+}
+
+.sandbox-ruler-anchor-layer {
+  position: absolute;
+  z-index: 20;
+  inset: 0;
+  pointer-events: none;
+}
+
+.sandbox-ruler-anchor,
+.sandbox-ruler-grid-point {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  margin: -7px 0 0 -7px;
+  border: 2px solid var(--surface-strong);
+  border-radius: 50%;
+  background: var(--blue);
+  color: white;
+  box-shadow: 0 0 0 1px var(--blue), 0 2px 5px rgba(16, 36, 57, 0.28);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.39rem;
+  font-weight: 900;
+  line-height: 10px;
+  text-align: center;
+  transform: none;
+}
+
+.sandbox-ruler-anchor {
+  min-width: 14px;
+  min-height: 14px;
+  padding: 0;
+  pointer-events: auto;
+  cursor: crosshair;
+}
+
+.sandbox-ruler-anchor > span { pointer-events: none; }
+.sandbox-ruler-anchor.selected { background: var(--orange); color: var(--ink); box-shadow: 0 0 0 2px var(--blue); }
+.sandbox-ruler-anchor:hover,
+.sandbox-ruler-anchor:focus-visible { z-index: 2; background: var(--orange); color: var(--ink); outline: 0; }
+
+.sandbox-ruler-anchor:hover::after,
+.sandbox-ruler-anchor:focus-visible::after {
+  content: attr(data-label);
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 6px);
+  width: max-content;
+  max-width: 180px;
+  padding: 5px 7px;
+  border: 1px solid var(--ink);
+  border-radius: 3px;
+  background: var(--surface-strong);
+  color: var(--ink);
+  box-shadow: 2px 2px 0 var(--ink);
+  font-size: 0.55rem;
+  line-height: 1.2;
+  transform: translateX(-50%);
+  white-space: normal;
+}
+
+.sandbox-ruler-grid-point {
+  z-index: 3;
+  background: var(--orange);
+  color: var(--ink);
+  pointer-events: none;
+}
 
 .sandbox-ruler-layer {
   position: absolute;

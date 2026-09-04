@@ -10,7 +10,9 @@ import {
 import {
   decodeSandboxProject,
   encodeSandboxProject,
-  measureSandboxItems,
+  getSandboxRulerAnchors,
+  measureSandboxPoints,
+  resolveSandboxRulerPoint,
 } from "../app/sandbox-project.mjs";
 
 test("project codes use only letters and numbers and restore all experiment values", () => {
@@ -50,16 +52,46 @@ test("project codes reject damage instead of loading partial experiments", () =>
   assert.throws(() => decodeSandboxProject("NOTAPHYSICSLABCODE"), /not a PhysicsLab/i);
 });
 
-test("the ruler measures either object centers or exact outer edges", () => {
+test("the ruler measures named corners, sides, and grid intersections", () => {
   const first = createSandboxItem("block", "first", 20, 50);
   const second = createSandboxItem("block", "second", 40, 50);
-  const center = measureSandboxItems([first, second], first.id, second.id, "center");
-  const edge = measureSandboxItems([first, second], first.id, second.id, "edge");
+  const measurement = measureSandboxPoints(
+    [first, second],
+    { kind: "object", itemId: first.id, anchor: "east" },
+    { kind: "grid", x: second.x, y: second.y },
+  );
+  const anchors = getSandboxRulerAnchors(first);
 
-  assert.equal(center.distance, 4);
-  assert.equal(edge.distance, 3);
-  assert.equal(edge.start.x, first.x + WORLD_SCALE / 2);
-  assert.equal(edge.end.x, second.x - WORLD_SCALE / 2);
+  assert.equal(anchors.length, 9);
+  assert.equal(anchors.find((anchor) => anchor.id === "east").x, first.x + WORLD_SCALE / 2);
+  assert.equal(anchors.find((anchor) => anchor.id === "north-west").y, first.y - WORLD_SCALE / 2);
+  assert.equal(measurement.distance, 3.5);
+  assert.equal(measurement.start.x, first.x + WORLD_SCALE / 2);
+  assert.equal(measurement.end.x, second.x);
+});
+
+test("object ruler points stay attached while an object moves", () => {
+  const block = createSandboxItem("block", "moving", 20, 50);
+  const reference = { kind: "object", itemId: block.id, anchor: "south-east" };
+  const before = resolveSandboxRulerPoint([block], reference);
+  const after = resolveSandboxRulerPoint([{ ...block, x: 35, y: 65 }], reference);
+
+  assert.equal(after.x - before.x, 15);
+  assert.equal(after.y - before.y, 15);
+});
+
+test("inclines and pendulums expose their physical endpoints", () => {
+  const incline = createSandboxItem("incline", "slope", 80, 100);
+  const pendulum = createSandboxItem("pendulum", "pendulum", 120, 40);
+  pendulum.length = 4;
+  const inclineAnchors = getSandboxRulerAnchors(incline);
+  const pendulumAnchors = getSandboxRulerAnchors(pendulum);
+
+  assert.ok(inclineAnchors.some((anchor) => anchor.id === "low-end"));
+  assert.ok(inclineAnchors.some((anchor) => anchor.id === "high-end"));
+  assert.ok(inclineAnchors.some((anchor) => anchor.id === "right-angle"));
+  assert.equal(pendulumAnchors.find((anchor) => anchor.id === "pivot").y, pendulum.y);
+  assert.equal(pendulumAnchors.find((anchor) => anchor.id === "bob-center").y, pendulum.y + pendulum.length * WORLD_SCALE);
 });
 
 test("paused analysis reports force, acceleration, momentum, and energy", () => {

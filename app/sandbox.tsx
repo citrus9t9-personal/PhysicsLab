@@ -53,7 +53,9 @@ import SandboxGraph, { type SandboxMotionSample } from "./sandbox-graph";
 import {
   decodeSandboxProject,
   encodeSandboxProject,
-  measureSandboxItems,
+  getSandboxRulerAnchors,
+  measureSandboxPoints,
+  resolveSandboxRulerPoint,
 } from "./sandbox-project.mjs";
 
 type ConnectorType = "rope" | "spring";
@@ -123,7 +125,17 @@ interface ExperimentSnapshot {
   links: SandboxLink[];
 }
 
-type RulerBasis = "center" | "edge";
+type RulerPointReference =
+  | { kind: "grid"; x: number; y: number }
+  | { kind: "object"; itemId: string; anchor: string };
+
+interface RulerAnchor {
+  id: string;
+  label: string;
+  shortLabel: string;
+  x: number;
+  y: number;
+}
 
 interface SandboxAnalysis {
   position: { x: number; height: number };
@@ -388,8 +400,7 @@ export default function SandboxLab() {
   const [loadCode, setLoadCode] = useState("");
   const [projectMessage, setProjectMessage] = useState("");
   const [rulerActive, setRulerActive] = useState(false);
-  const [rulerBasis, setRulerBasis] = useState<RulerBasis>("center");
-  const [rulerIds, setRulerIds] = useState<string[]>([]);
+  const [rulerPoints, setRulerPoints] = useState<RulerPointReference[]>([]);
   const [zoom, setZoom] = useState(DEFAULT_SANDBOX_ZOOM);
   const [camera, setCamera] = useState({ x: 0, y: 0 });
   const [isPanning, setIsPanning] = useState(false);
@@ -590,9 +601,15 @@ export default function SandboxLab() {
     (isDynamicItem(item) && !isFixedItem(item)) || item.type === "pendulum" || (item.type === "rod" && item.anchorEnabled)
   )), [items]);
   const trackedGraphObject = graphableItems.find((item) => item.id === graphObjectId) ?? graphableItems[0] ?? null;
-  const rulerMeasurement = useMemo(() => rulerIds.length === 2
-    ? measureSandboxItems(items, rulerIds[0], rulerIds[1], rulerBasis)
-    : null, [items, rulerBasis, rulerIds]);
+  const rulerAnchors = useMemo(() => items.flatMap((item) => (
+    (getSandboxRulerAnchors(item) as RulerAnchor[]).map((anchor) => ({ ...anchor, itemId: item.id }))
+  )), [items]);
+  const resolvedRulerPoints = useMemo(() => rulerPoints
+    .map((point) => resolveSandboxRulerPoint(items, point) as RulerAnchor | null)
+    .filter((point): point is RulerAnchor => Boolean(point)), [items, rulerPoints]);
+  const rulerMeasurement = useMemo(() => rulerPoints.length === 2
+    ? measureSandboxPoints(items, rulerPoints[0], rulerPoints[1])
+    : null, [items, rulerPoints]);
   const selectedAnalysis = useMemo(() => initialized && !running && selectedItem
     ? getSandboxAnalysis(items, links, selectedItem.id) as SandboxAnalysis | null
     : null, [initialized, items, links, running, selectedItem]);
@@ -674,7 +691,7 @@ export default function SandboxLab() {
       setLinkPulleyIds([]);
       setPulleyLinkId(null);
       setRulerActive(false);
-      setRulerIds([]);
+      setRulerPoints([]);
       setRunning(false);
       return;
     }
@@ -840,6 +857,17 @@ export default function SandboxLab() {
     }
 
     if (blocksCamera) return;
+    if (rulerActive) {
+      event.preventDefault();
+      clearSelection();
+      const point = stageCoordinates(event.clientX, event.clientY);
+      chooseRulerPoint({
+        kind: "grid",
+        x: snapToGrid(point.x),
+        y: snapToGrid(point.y),
+      });
+      return;
+    }
     clearSelection();
     panGestureRef.current = {
       pointerId: event.pointerId,
@@ -1298,23 +1326,38 @@ export default function SandboxLab() {
     setLinkPulleyIds([]);
     setPulleyLinkId(null);
     setRulerActive((current) => {
-      if (current) setRulerIds([]);
+      if (current) setRulerPoints([]);
       return !current;
     });
   };
 
-  const chooseRulerPoint = (id: string) => {
-    setRulerIds((current) => {
-      if (current.length >= 2) return [id];
-      if (current[0] === id) return current;
-      return [...current, id];
+  const chooseRulerPoint = (point: RulerPointReference) => {
+    const key = point.kind === "grid"
+      ? `grid:${point.x}:${point.y}`
+      : `object:${point.itemId}:${point.anchor}`;
+    setRulerPoints((current) => {
+      const base = current.length >= 2 ? [] : current;
+      const duplicate = base.some((candidate) => (
+        candidate.kind === "grid"
+          ? `grid:${candidate.x}:${candidate.y}`
+          : `object:${candidate.itemId}:${candidate.anchor}`
+      ) === key);
+      return duplicate ? base : [...base, point];
     });
   };
 
   const beginItemDrag = (event: PointerEvent<HTMLDivElement>, item: SandboxItem) => {
     if (rulerActive) {
       event.preventDefault();
-      chooseRulerPoint(item.id);
+      const point = stageCoordinates(event.clientX, event.clientY);
+      const anchors = getSandboxRulerAnchors(item) as RulerAnchor[];
+      const nearest = anchors.reduce<RulerAnchor | null>((best, anchor) => {
+        if (!best) return anchor;
+        const bestDistance = Math.hypot(best.x - point.x, best.y - point.y);
+        const anchorDistance = Math.hypot(anchor.x - point.x, anchor.y - point.y);
+        return anchorDistance < bestDistance ? anchor : best;
+      }, null);
+      if (nearest) chooseRulerPoint({ kind: "object", itemId: item.id, anchor: nearest.id });
       return;
     }
     if (initialized) {
@@ -1506,7 +1549,7 @@ export default function SandboxLab() {
     setLinkPulleyIds([]);
     setPulleyLinkId(null);
     setRulerActive(false);
-    setRulerIds([]);
+    setRulerPoints([]);
     resetMotionRecording(itemsRef.current);
     const firstGraphable = itemsRef.current.find((item) => (
       (isDynamicItem(item) && !isFixedItem(item)) || item.type === "pendulum" || (item.type === "rod" && item.anchorEnabled)
@@ -1552,7 +1595,7 @@ export default function SandboxLab() {
     setSnapGuide(null);
     setRunning(false);
     setRulerActive(false);
-    setRulerIds([]);
+    setRulerPoints([]);
     resetMotionRecording(nextItems);
   };
 
@@ -1660,7 +1703,7 @@ export default function SandboxLab() {
       setLinkPulleyIds([]);
       setPulleyLinkId(null);
       setRulerActive(false);
-      setRulerIds([]);
+      setRulerPoints([]);
       setSnapGuide(null);
       initializedRef.current = false;
       runningRef.current = false;
@@ -1712,16 +1755,14 @@ export default function SandboxLab() {
             <h3>Measure</h3>
             <button type="button" className={rulerActive ? "active" : ""} onClick={toggleRuler} aria-pressed={rulerActive}>
               <span aria-hidden="true">↔</span>
-              <span><strong>Ruler</strong><small>Select two objects to measure between them.</small></span>
+              <span><strong>Ruler</strong><small>Pick exact object points or grid intersections.</small></span>
             </button>
             {rulerActive && <div className="sandbox-ruler-options">
-              <span>Measure from</span>
-              <div role="group" aria-label="Ruler measurement points">
-                <button type="button" className={rulerBasis === "center" ? "active" : ""} onClick={() => setRulerBasis("center")}>Centers</button>
-                <button type="button" className={rulerBasis === "edge" ? "active" : ""} onClick={() => setRulerBasis("edge")}>Outer edges</button>
-              </div>
-              <small>{rulerIds.length === 0 ? "Choose the first object." : rulerIds.length === 1 ? "Choose the second object." : `${rulerMeasurement?.distance.toFixed(3) ?? "0.000"} m`}</small>
-              {rulerIds.length > 0 && <button type="button" onClick={() => setRulerIds([])}>Clear measurement</button>}
+              <span>Snap points</span>
+              <p>Click a blue point on an object, click near a side or corner, or click empty space for the nearest grid intersection.</p>
+              <small>{rulerPoints.length === 0 ? "Choose point 1." : rulerPoints.length === 1 ? "Choose point 2." : `${rulerMeasurement?.distance.toFixed(3) ?? "0.000"} m`}</small>
+              {resolvedRulerPoints.map((point, index) => <output key={`${index}-${point.label}`}>{index + 1}. {point.label}</output>)}
+              {rulerPoints.length > 0 && <button type="button" onClick={() => setRulerPoints([])}>Clear measurement</button>}
             </div>}
           </div>
         </aside>
@@ -1787,6 +1828,37 @@ export default function SandboxLab() {
             <div className="sandbox-left-wall" aria-hidden="true" />
             <div className="sandbox-right-wall" aria-hidden="true" />
             <div className="sandbox-floor" aria-hidden="true" />
+            {rulerActive && <div className="sandbox-ruler-anchor-layer" aria-label="Selectable ruler snap points">
+              {rulerAnchors.map((anchor) => {
+                const selectedIndex = rulerPoints.findIndex((point) => point.kind === "object" && point.itemId === anchor.itemId && point.anchor === anchor.id);
+                const selected = selectedIndex >= 0;
+                return <button
+                  key={`${anchor.itemId}-${anchor.id}`}
+                  type="button"
+                  className={`sandbox-ruler-anchor ${selected ? "selected" : ""}`}
+                  style={{ left: `${anchor.x * CANVAS_PIXELS_PER_UNIT}px`, top: `${anchor.y * CANVAS_PIXELS_PER_UNIT}px` }}
+                  data-label={anchor.label}
+                  title={anchor.label}
+                  aria-label={`Use ${anchor.label} as ruler point`}
+                  aria-pressed={selected}
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    chooseRulerPoint({ kind: "object", itemId: anchor.itemId, anchor: anchor.id });
+                  }}
+                ><span aria-hidden="true">{selected ? selectedIndex + 1 : anchor.shortLabel}</span></button>;
+              })}
+              {rulerPoints.map((reference, index) => {
+                if (reference.kind !== "grid") return null;
+                const point = resolveSandboxRulerPoint(items, reference) as RulerAnchor | null;
+                return point ? <span
+                  key={`grid-${point.x}-${point.y}-${index}`}
+                  className="sandbox-ruler-grid-point"
+                  style={{ left: `${point.x * CANVAS_PIXELS_PER_UNIT}px`, top: `${point.y * CANVAS_PIXELS_PER_UNIT}px` }}
+                  aria-hidden="true"
+                >{index + 1}</span> : null;
+              })}
+            </div>}
             {rulerMeasurement && <svg className="sandbox-ruler-layer" viewBox={`0 0 ${SANDBOX_WORLD_WIDTH} ${SANDBOX_WORLD_HEIGHT}`} preserveAspectRatio="none" aria-label={`${rulerMeasurement.distance.toFixed(3)} meter ruler measurement`}>
               <line x1={rulerMeasurement.start.x} y1={rulerMeasurement.start.y} x2={rulerMeasurement.end.x} y2={rulerMeasurement.end.y} />
               <circle cx={rulerMeasurement.start.x} cy={rulerMeasurement.start.y} r="1.4" />
@@ -1860,7 +1932,7 @@ export default function SandboxLab() {
               return (
                 <div
                   key={item.id}
-                  className={`sandbox-entity entity-${item.type} ${item.type === "incline" && item.angle < 0 ? "flipped" : ""} ${selectedItemId === item.id ? "selected" : ""} ${rulerIds.includes(item.id) ? "ruler-point" : ""} ${linkStartId === item.id ? "link-start" : ""} ${pulleyLinkId && item.type === "pulley" ? "pulley-target" : ""} ${activeSnap ? "snapping" : ""}`}
+                  className={`sandbox-entity entity-${item.type} ${item.type === "incline" && item.angle < 0 ? "flipped" : ""} ${selectedItemId === item.id ? "selected" : ""} ${rulerPoints.some((point) => point.kind === "object" && point.itemId === item.id) ? "ruler-point" : ""} ${linkStartId === item.id ? "link-start" : ""} ${pulleyLinkId && item.type === "pulley" ? "pulley-target" : ""} ${activeSnap ? "snapping" : ""}`}
                   style={{
                     left: `${item.x * CANVAS_PIXELS_PER_UNIT}px`,
                     top: `${item.y * CANVAS_PIXELS_PER_UNIT}px`,
@@ -1890,7 +1962,10 @@ export default function SandboxLab() {
                   onKeyDown={(event) => {
                     if (event.key !== "Enter" && event.key !== " ") return;
                     event.preventDefault();
-                    if (rulerActive) chooseRulerPoint(item.id);
+                    if (rulerActive) {
+                      const anchor = (getSandboxRulerAnchors(item) as RulerAnchor[])[0];
+                      if (anchor) chooseRulerPoint({ kind: "object", itemId: item.id, anchor: anchor.id });
+                    }
                     else if (pulleyLinkId && item.type === "pulley") addPulleyToLink(pulleyLinkId, item.id);
                     else if (connectorTool) chooseEndpoint(item.id);
                     else if (!pulleyLinkId) selectItem(item.id);

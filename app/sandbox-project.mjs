@@ -2,6 +2,9 @@ import {
   WORLD_SCALE,
   createSandboxItem,
   getConnectionAnchor,
+  getInclineGeometry,
+  getItemHitbox,
+  getRodAnchorPoint,
 } from "./sandbox-physics.mjs";
 
 const CODE_PREFIX = "PHY1";
@@ -160,6 +163,134 @@ export function measureSandboxItems(items, firstId, secondId, basis = "center") 
   if (!first || !second || first.id === second.id) return null;
   const start = basis === "edge" ? getConnectionAnchor(first, second) : { x: first.x, y: first.y };
   const end = basis === "edge" ? getConnectionAnchor(second, first) : { x: second.x, y: second.y };
+  return {
+    start,
+    end,
+    distance: Math.hypot(end.x - start.x, end.y - start.y) / WORLD_SCALE,
+  };
+}
+
+function rotateRulerOffset(x, y, angle = 0) {
+  const cosine = Math.cos(angle);
+  const sine = Math.sin(angle);
+  return {
+    x: x * cosine - y * sine,
+    y: x * sine + y * cosine,
+  };
+}
+
+function rulerAnchor(item, id, label, shortLabel, x, y) {
+  return {
+    id,
+    label: `${item.label} ${label}`,
+    shortLabel,
+    x,
+    y,
+  };
+}
+
+function rectangleRulerAnchors(item, shape) {
+  const points = [
+    ["north-west", "top-left corner", "NW", -shape.halfWidth, -shape.halfHeight],
+    ["north", "top side", "N", 0, -shape.halfHeight],
+    ["north-east", "top-right corner", "NE", shape.halfWidth, -shape.halfHeight],
+    ["east", item.type === "rod" || item.type === "platform" ? "right endpoint" : "right side", "E", shape.halfWidth, 0],
+    ["south-east", "bottom-right corner", "SE", shape.halfWidth, shape.halfHeight],
+    ["south", "bottom side", "S", 0, shape.halfHeight],
+    ["south-west", "bottom-left corner", "SW", -shape.halfWidth, shape.halfHeight],
+    ["west", item.type === "rod" || item.type === "platform" ? "left endpoint" : "left side", "W", -shape.halfWidth, 0],
+  ];
+  return [rulerAnchor(item, "center", "center", "C", shape.x, shape.y), ...points.map(([id, label, shortLabel, x, y]) => {
+    const offset = rotateRulerOffset(x, y, shape.angle);
+    return rulerAnchor(item, id, label, shortLabel, shape.x + offset.x, shape.y + offset.y);
+  })];
+}
+
+/**
+ * Returns stable, named ruler points for an item. The point ID is stored by the
+ * UI so the measurement follows the same physical feature while the item moves.
+ */
+export function getSandboxRulerAnchors(item) {
+  if (!item) return [];
+
+  if (item.type === "incline") {
+    const { width, height } = getInclineGeometry(item);
+    const leftBottom = { x: item.x - width / 2, y: item.y + height / 2 };
+    const rightBottom = { x: item.x + width / 2, y: item.y + height / 2 };
+    const high = item.angle < 0
+      ? { x: item.x - width / 2, y: item.y - height / 2 }
+      : { x: item.x + width / 2, y: item.y - height / 2 };
+    const low = item.angle < 0 ? rightBottom : leftBottom;
+    const corner = item.angle < 0 ? leftBottom : rightBottom;
+    return [
+      rulerAnchor(item, "center", "center", "C", item.x, item.y),
+      rulerAnchor(item, "low-end", "low endpoint", "L", low.x, low.y),
+      rulerAnchor(item, "slope-midpoint", "slope midpoint", "M", (low.x + high.x) / 2, (low.y + high.y) / 2),
+      rulerAnchor(item, "high-end", "high endpoint", "H", high.x, high.y),
+      rulerAnchor(item, "right-angle", "right-angle corner", "90", corner.x, corner.y),
+    ];
+  }
+
+  if (item.type === "pendulum") {
+    const theta = (item.angle * Math.PI) / 180;
+    const armLength = Math.max(item.length * WORLD_SCALE, 2);
+    const bob = {
+      x: item.x - Math.sin(theta) * armLength,
+      y: item.y + Math.cos(theta) * armLength,
+    };
+    const radius = (item.size * WORLD_SCALE) / 2;
+    return [
+      rulerAnchor(item, "pivot", "pivot", "P", item.x, item.y),
+      rulerAnchor(item, "arm-midpoint", "arm midpoint", "M", (item.x + bob.x) / 2, (item.y + bob.y) / 2),
+      rulerAnchor(item, "bob-center", "bob center", "B", bob.x, bob.y),
+      rulerAnchor(item, "bob-north", "bob top", "N", bob.x, bob.y - radius),
+      rulerAnchor(item, "bob-east", "bob right side", "E", bob.x + radius, bob.y),
+      rulerAnchor(item, "bob-south", "bob bottom", "S", bob.x, bob.y + radius),
+      rulerAnchor(item, "bob-west", "bob left side", "W", bob.x - radius, bob.y),
+    ];
+  }
+
+  const shape = getItemHitbox(item);
+  if (!shape) return [];
+  if (shape.kind === "circle") {
+    return [
+      rulerAnchor(item, "center", "center", "C", shape.x, shape.y),
+      rulerAnchor(item, "north", "top side", "N", shape.x, shape.y - shape.radius),
+      rulerAnchor(item, "east", "right side", "E", shape.x + shape.radius, shape.y),
+      rulerAnchor(item, "south", "bottom side", "S", shape.x, shape.y + shape.radius),
+      rulerAnchor(item, "west", "left side", "W", shape.x - shape.radius, shape.y),
+    ];
+  }
+
+  const anchors = rectangleRulerAnchors(item, shape);
+  if (item.type === "rod" && item.anchorEnabled) {
+    const hinge = getRodAnchorPoint(item);
+    anchors.push(rulerAnchor(item, "hinge", "hinge", "A", hinge.x, hinge.y));
+  }
+  return anchors;
+}
+
+export function resolveSandboxRulerPoint(items, reference) {
+  if (!reference || typeof reference !== "object") return null;
+  if (reference.kind === "grid") {
+    if (!Number.isFinite(reference.x) || !Number.isFinite(reference.y)) return null;
+    return {
+      x: reference.x,
+      y: reference.y,
+      label: `Grid (${(reference.x / WORLD_SCALE).toFixed(1)}, ${(reference.y / WORLD_SCALE).toFixed(1)}) m`,
+      shortLabel: "G",
+    };
+  }
+  if (reference.kind !== "object") return null;
+  const item = items.find((candidate) => candidate.id === reference.itemId);
+  if (!item) return null;
+  return getSandboxRulerAnchors(item).find((anchor) => anchor.id === reference.anchor) ?? null;
+}
+
+export function measureSandboxPoints(items, firstReference, secondReference) {
+  const start = resolveSandboxRulerPoint(items, firstReference);
+  const end = resolveSandboxRulerPoint(items, secondReference);
+  if (!start || !end) return null;
   return {
     start,
     end,
